@@ -49,6 +49,15 @@ ADDR_MULTI_SPEED_HEAD=0x1200
 ADDR_MULTI_SPEED_FIRST=0x1220
 ADDR_DI_FLAGS=0x0300
 
+ADDR_ANALOG_OFFSET=0x0336
+ADDR_ANALOG_TIME_CTE=0x0337
+ADDR_ANALOG_DEADZONE=0x0339
+ADDR_ANALOG_DRIFT=0x0340
+ADDR_ANALOG_SPEED_10V=0x0351
+
+ADDR_POS_SRC_SEL=0x0500
+ADDR_MULTI_POS_HEAD=0x1100
+ADDR_MULTI_POS_FIRST=0x1112
 
 REG_P0B_07 = 0x0B07  # P0B-07 (abs pos, 32-bit) - historical naming
 REG_P0B_09 = 0x0B09  # P0B-09 (pos per revolution, 0..65535)
@@ -91,8 +100,60 @@ def motor_speed_mode(motor):
     # P06-02 = 0 (sel = A)
     motor.write_register(ADDR_SPEED_SRC_SEL, 0)
 
+
 #NOTE: THIS THROWS ERROR
-def motor_set_sine(motor): 
+def motor_pos_sin(motor): 
+    print(":::::SETTING SPEED SINE::::::")
+    #NOTE:  I dont know what any of these do, keep it just to be safe.
+    motor.write_register(ADDR_VDI_LEVEL, 0 )  
+    motor.write_register(ADDR_VDI_ENABLE, 1 ) 
+    motor.write_register(ADDR_DI1_FN, 0 )
+    
+    # Set mode to position
+    motor.write_register(ADDR_CTRL_MODE, 1 )
+       
+    motor.write_register(ADDR_POS_SRC_SEL,2) #muti segment
+
+
+    #sets speed command to multi segment
+    data=[0,5,1]
+    #set multi speed params
+
+    SEGMENT_TIME=1 # 0.1 secs
+    NUM_SEGMENTS=2
+    MAX_VALUE=120
+
+    data=[1,NUM_SEGMENTS,1,1,0,0]  #header  
+    motor.write_registers(ADDR_MULTI_POS_HEAD,data)
+
+    data=[]
+    points = np.linspace(0, 2 * np.pi, NUM_SEGMENTS)
+    for i in points:
+        pos=np.floor(MAX_VALUE * np.sin(i))
+        pos_high=(pos >> 16)& 0xFFFF
+        pos_low=pos & 0xFFFF
+        #if pos<0:
+        #    pos_high=pos >> 16
+        #    pos_low=pos & 0xFFFF
+        data.append(pos_high)
+        data.append(pos_low)
+        speed=100#TODO:do calc on this
+        data.append(speed)
+        accel=100#TODO:DO CALC ON THIS
+        data.append(accel)
+        wait=0
+        data.append(wait)
+        data.append(SEGMENT_TIME)
+        data.append(0)
+
+    motor.write_registers(ADDR_MULTI_POS_FIRST,data)
+    read=motor.read_holding_registers(ADDR_MULTI_POS_FIRST,len(data))
+    print(read)
+
+
+
+#NOTE: THIS THROWS ERROR
+def motor_vel_sin(motor): 
     print(":::::SETTING SPEED SINE::::::")
     #NOTE:  I dont know what any of these do, keep it just to be safe.
     motor.write_register(ADDR_VDI_LEVEL, 0 )  
@@ -133,7 +194,7 @@ def motor_set_sine(motor):
 
 #NOTE: THIS THROWS ERROR
 def motor_switch_analog(motor): 
-    print(":::::SETTING SPEED SINE::::::")
+    print(":::::SWITCHING TO ANALOG INPUT::::::")
     #NOTE:  I dont know what any of these do, keep it just to be safe.
     motor.write_register(ADDR_VDI_LEVEL, 0 )  
     motor.write_register(ADDR_VDI_ENABLE, 1 ) 
@@ -143,31 +204,21 @@ def motor_switch_analog(motor):
     motor.write_register(ADDR_CTRL_MODE, 0 )
         
 
-    #sets speed command to multi segment
-    data=[0,5,1]
+    #sets speed command to analog A
+    data=[1,2,0]
     motor.write_registers(ADDR_SPEED_SRC_A,data)
     
-    #set Analog input params
-    SEGMENT_TIME=1 # 0.1 secs
-    NUM_SEGMENTS=2
-    MAX_VALUE=120
-    data=[1,NUM_SEGMENTS,0]  #header 
-    motor.write_registers(ADDR_MULTI_SPEED_HEAD,data)
+    #set Analog input params 
+    motor.write_registers(ADDR_ANALOG_OFFSET,0)
+
+    motor.write_register(ADDR_ANALOG_TIME_CTE,0)
+    motor.write_register(ADDR_ANALOG_DEADZONE,0)
+    motor.write_register(ADDR_ANALOG_DRIFT,0)
+    motor.write_register(ADDR_ANALOG_DRIFT,0)
+    motor.write_register(ADDR_ANALOG_SPEED_10V,500)
     
-
-    data=[]
-    points = np.linspace(0, 2 * np.pi, NUM_SEGMENTS)
-    for i in points:
-        speed=np.floor(MAX_VALUE * np.sin(i))
-        if speed<0:
-            speed=speed & 0xFFFF
-        data.append(speed)
-        data.append(SEGMENT_TIME)
-        data.append(0)
-
-    motor.write_registers(ADDR_MULTI_SPEED_FIRST,data)
-    read=motor.read_holding_registers(ADDR_MULTI_SPEED_FIRST)
-    print(read)
+    #read=motor.read_holding_registers(ADDR_MULTI_SPEED_FIRST)
+    #print(read)
 
 
 def try_loop(func):
