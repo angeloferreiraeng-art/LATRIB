@@ -68,7 +68,222 @@ REG_P05_02 = 0x0502  # P05-02 (command units per revolution)
 REG_P0C_26 = 0x0C26  # word order
 
 
+
+class Motor:
+    def __init__(self) -> None:
+        
+        try:
+            self.client = ModbusSerialClient(
+               port=MODBUS_PORT,
+                baudrate=MODBUS_BAUD_RATE,
+                parity=MODBUS_PARITY,
+                stopbits=MODBUS_STOPBITS,
+                bytesize=MODBUS_BYTESIZE,
+                timeout=(100 / 1_000_000) + 0.1
+            )
+            self.client.connect()
+        except Exception as e:
+            print(f"CONNECTION ERROR:::{e}")
+            exit(1)            
+
+    def start(self):
+        print(":::::STARTING MOTOR::::::")
+        self.client.write_register(ADDR_VDI_LEVEL, 1 )
     
+    def stop(self):
+        print(":::::STOPING MOTOR::::::")
+        self.client.write_register(ADDR_VDI_LEVEL, 0 )
+    
+    def speed_mode(self):
+    # P31-00 = 0 (VDI STOP)
+        self.client.write_register(ADDR_VDI_LEVEL, 0 )    
+    # P0C-09 = 1 (Comm VDI)
+        self.client.write_register(ADDR_VDI_ENABLE, 1)
+       
+    # P03-02 = 0 (DI1 func)
+        self.client.write_register(ADDR_DI1_FN, 0)
+        
+    # P02-00 = 0 (control mode speed)
+        self.client.write_register(ADDR_CTRL_MODE, 0)
+        
+    # P06-00 = 0 (A src = given)
+        self.client.write_register(ADDR_SPEED_SRC_A, 0)
+        
+    # P06-01 = 3 (B src = 0)
+        self.client.write_register(ADDR_SPEED_SRC_B, 3)
+        
+    # P06-02 = 0 (sel = A)
+        self.client.write_register(ADDR_SPEED_SRC_SEL, 0)
+
+
+    def __del__(self):
+        self.client.close()
+ 
+
+#NOTE: THIS THROWS ERROR
+    def analog_mode(self): 
+        print(":::::SWITCHING TO ANALOG INPUT::::::")
+        #NOTE:  I dont know what any of these do, keep it just to be safe.
+        self.client.write_register(ADDR_VDI_LEVEL, 0 )  
+        self.client.write_register(ADDR_VDI_ENABLE, 1 ) 
+        self.client.write_register(ADDR_DI1_FN, 0 )
+    
+        # Set mode to speed
+        self.client.write_register(ADDR_CTRL_MODE, 0 )
+        
+
+        #sets speed command to analog A
+        data=[1,2,0]
+        self.client.write_registers(ADDR_SPEED_SRC_A,data)
+    
+        #set Analog input params 
+        self.client.write_register(ADDR_ANALOG_OFFSET,0)
+
+        self.client.write_register(ADDR_ANALOG_TIME_CTE,0)
+        self.client.write_register(ADDR_ANALOG_DEADZONE,0)
+        self.client.write_register(ADDR_ANALOG_DRIFT,0)
+        self.client.write_register(ADDR_ANALOG_DRIFT,0)
+        self.client.write_register(ADDR_ANALOG_SPEED_10V,500)
+    
+
+
+    def pos_ctrl(self,f,times):
+        assert(len(times)<=16),"TIMES ARRAY CANT BE BIGGER THAN 16 ELEMENTS"
+        print(":::::SETTING POSITION SINE::::::")
+    #NOTE:  I dont know what any of these do, keep it just to be safe.
+        self.client.write_register(ADDR_VDI_LEVEL, 0 )  
+        self.client.write_register(ADDR_VDI_ENABLE, 1 ) 
+        self.client.write_register(ADDR_DI1_FN, 0 )
+    
+    # Set mode to position
+        self.client.write_register(ADDR_CTRL_MODE, 1 )
+       
+        self.client.write_register(ADDR_POS_SRC_SEL,2) #muti segment
+
+        SEGMENT_TIME=1 # 0.1 secs
+        NUM_SEGMENTS=2
+        MAX_VALUE=120
+
+        data=[1,NUM_SEGMENTS,1,1,0,0]  #header  
+        self.client.write_registers(ADDR_MULTI_POS_HEAD,data)
+
+        data=[]
+        t=0
+        for dt in times:
+            t=t+dt
+            pos=np.floor(f(t))
+            pos_high=(pos >> 16)& 0xFFFF
+            pos_low=pos & 0xFFFF
+        #if pos<0:
+        #    pos_high=pos >> 16
+        #    pos_low=pos & 0xFFFF
+            data.append(pos_high)
+            data.append(pos_low)
+            speed=100#TODO:do calc on this
+            data.append(speed)
+            accel=100#TODO:DO CALC ON THIS
+            data.append(accel)
+            wait=0
+            data.append(wait)
+            data.append(dt)
+            data.append(0)
+
+        self.client.write_registers(ADDR_MULTI_POS_FIRST,data)
+        #read=motor.read_holding_registers(ADDR_MULTI_POS_FIRST,len(data))
+        #print(read)
+
+ 
+#NOTE: THIS THROWS ERROR
+    def vel_ctrl(self,f,times):
+        assert(len(times)<=16),"TIMES ARRAY CANT BE BIGGER THAN 16 ELEMENTS"
+        print(":::::SETTING SPEED SINE::::::")
+        self.client.write_register(ADDR_VDI_LEVEL, 0 )  
+        self.client.write_register(ADDR_VDI_ENABLE, 1 ) 
+        self.client.write_register(ADDR_DI1_FN, 0 )
+    
+        # Set mode to speed
+        self.client.write_register(ADDR_CTRL_MODE, 0 )
+        
+
+        #sets speed command to multi segment
+        data=[0,5,1]
+        self.client.write_registers(ADDR_SPEED_SRC_A,data)
+        #set multi speed params
+
+        SEGMENT_TIME=1 # 0.1 secs
+        NUM_SEGMENTS=2
+        MAX_VALUE=120
+
+        data=[1,NUM_SEGMENTS,0]  #header 
+        self.client.write_registers(ADDR_MULTI_SPEED_HEAD,data)
+    
+
+        data=[]
+        t=0
+        for dt in times:
+            t=t+dt
+            speed=np.floor(f(t))
+            if speed<0:
+                speed=speed & 0xFFFF
+            data.append(speed)
+            data.append(dt)
+            data.append(0)
+
+        self.client.write_registers(ADDR_MULTI_SPEED_FIRST,data)
+        #read=motor.read_holding_registers(ADDR_MULTI_SPEED_FIRST)
+        #print(read)
+
+   
+
+    def acc_ctrl(self,f,times): 
+        assert(len(times)<=16),"TIMES ARRAY CANT BE BIGGER THAN 16 ELEMENTS"
+        print(":::::SETTING TORQUE SINE::::::")
+    #NOTE:  I dont know what any of these do, keep it just to be safe.
+        self.client.write_register(ADDR_VDI_LEVEL, 0 )  
+        self.client.write_register(ADDR_VDI_ENABLE, 1 ) 
+        self.client.write_register(ADDR_DI1_FN, 0 )
+    
+    # Set mode to position
+        self.client.write_register(ADDR_CTRL_MODE, 1 )
+       
+        self.client.write_register(ADDR_POS_SRC_SEL,2) #muti segment
+
+
+        #sets speed command to multi segment
+        data=[0,5,1]
+        #set multi speed params
+
+        SEGMENT_TIME=1 # 0.1 secs
+        NUM_SEGMENTS=2
+        MAX_VALUE=120
+
+        data=[1,NUM_SEGMENTS,1,1,0,0]  #header  
+        self.client.write_registers(ADDR_MULTI_POS_HEAD,data)
+
+        data=[]
+        points = np.linspace(0, 2 * np.pi, NUM_SEGMENTS)
+        t=0
+        for dt in times:
+            t=t+dt
+            pos=np.floor(f(t))
+            pos_high=(pos >> 16)& 0xFFFF
+            pos_low=pos & 0xFFFF
+        #if pos<0:
+        #    pos_high=pos >> 16
+        #    pos_low=pos & 0xFFFF
+            data.append(pos_high)
+            data.append(pos_low)
+            speed=100#TODO:do calc on this
+            data.append(speed)
+            accel=100#TODO:DO CALC ON THIS
+            data.append(accel)
+            wait=0
+            data.append(wait)
+            data.append(dt)
+            data.append(0)
+
+        self.client.write_registers(ADDR_MULTI_POS_FIRST,data)
+
 def motor_start(motor): 
     print(":::::STARTING MOTOR::::::")
     motor.write_register(ADDR_VDI_LEVEL, 1 )
@@ -76,7 +291,7 @@ def motor_start(motor):
 def motor_stop(motor):
     print(":::::STOPING MOTOR::::::")
     motor.write_register(ADDR_VDI_LEVEL, 0 )
-
+    
 
 def motor_speed_mode(motor):
     SLAVE_ID=1
@@ -232,8 +447,8 @@ def motor_acc_sin(motor):
         data.append(0)
 
     motor.write_registers(ADDR_MULTI_POS_FIRST,data)
-    read=motor.read_holding_registers(ADDR_MULTI_POS_FIRST,len(data))
-    print(read)
+    #read=motor.read_holding_registers(ADDR_MULTI_POS_FIRST,len(data))
+    #print(read)
 
 
 
@@ -278,26 +493,17 @@ def try_loop(func):
 
 #NOTE:  MAIN SCRIPT 
 
+NUM_SEGMENTS=16
+times = np.linspace(0, 2 * np.pi, NUM_SEGMENTS)
 
-try:
-    client = ModbusSerialClient(
-               port=MODBUS_PORT,
-                baudrate=MODBUS_BAUD_RATE,
-                parity=MODBUS_PARITY,
-                stopbits=MODBUS_STOPBITS,
-                bytesize=MODBUS_BYTESIZE,
-                timeout=(100 / 1_000_000) + 0.1
-            )
-    client.connect()
-except Exception as e:
-    print(f"CONNECTION ERROR:::{e}")
-    exit(1)            
+motor=Motor()    
 
-#try_loop(lambda:motor_stop(client))
+FREQ=1.5
+f_sine=lambda i: np.sin(FREQ*i)
 
-try_loop(lambda:motor_set_sine(client))
-try_loop(lambda:motor_start(client))
+try_loop(lambda:motor.stop())
 
-#closes modbus connection
-client.close()
+try_loop(lambda:motor.pos_ctrl(f_sine,times))
+
+try_loop(lambda:motor.start())
    
