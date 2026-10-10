@@ -494,16 +494,24 @@ def try_loop(func):
 #NOTE:  MAIN SCRIPT 
 
 NUM_SEGMENTS=16
-times = np.linspace(0, 2 * np.pi, NUM_SEGMENTS)
+SEG_TIME=1
+times = np.ones(NUM_SEGMENTS)*SEG_TIME  #np.linspace(0, 2 * np.pi, NUM_SEGMENTS)
 
 motor=Motor()    
 
-FREQ=1.5
-f_sine=lambda i: np.sin(FREQ*i)
+FREQ=1.5/(2*np.pi)
+MAX_VAL=25
+f_sine=lambda i: 25*np.sin(FREQ*i)
 
 try_loop(lambda:motor.stop())
 
 try_loop(lambda:motor.pos_ctrl(f_sine,times))
+
+#try_loop(lambda:motor.vel_ctrl(f_sine,times))
+#try_loop(lambda:motor.acc_ctrl(f_sine,times))
+
+
+
 
 try_loop(lambda:motor.start())
    
