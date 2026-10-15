@@ -13,18 +13,10 @@ ENCODER_CAL_POSITION_LOSS_S = 2.0
 RECIP_ENCODER_REVERSE_DELAY_S = 0.020
 RECIP_ENCODER_ORIGIN_TIMEOUT_S = 3.0
 
-def make_port_path(short_name: str) -> str:
-    """Convert COM port name to Windows device path."""
-    if short_name.upper().startswith('COM'):
-        num = int(short_name[3:]) if short_name[3:].isdigit() else 0
-        if num >= 10:
-            return f"\\\\.\\{short_name}"
-    return short_name
-
 
    
 #Modbus client params
-MODBUS_PORT=f"COM{1}"
+MODBUS_PORT=f"COM{5}"
 MODBUS_SLAVE_ID=1
 MODBUS_BAUD_RATE=115200
 MODBUS_PARITY="E"
@@ -37,27 +29,27 @@ STOP_CMD = 0x0000
 
 
 # Controller memory addresses
-ADDR_SPEED_VAL = 0x0603  # 1540-1 : RPM setpoint (int16)
-ADDR_CTRL_MODE = 0x0200  # control mode (speed/pos/torque)
-ADDR_DI1_FN = 0x0302  # DI1 func (disable)
-ADDR_SPEED_SRC_A = 0x0600  # main speed source A
-ADDR_SPEED_SRC_B = 0x0601  # aux speed source B
-ADDR_SPEED_SRC_SEL = 0x0602  # speed command source
-ADDR_VDI_ENABLE = 0x0C09  # comm VDI enable
-ADDR_VDI_LEVEL = 0x3100  # VDI virtual
-ADDR_MULTI_SPEED_HEAD=0x1200
-ADDR_MULTI_SPEED_FIRST=0x1220
+ADDR_SPEED_VAL = 0x0600+3  # 1540-1 : RPM setpoint (int16)
+ADDR_CTRL_MODE = 0x0200+0  # control mode (speed/pos/torque)
+ADDR_DI1_FN = 0x0300+2  # DI1 func (disable)
+ADDR_SPEED_SRC_A = 0x0600+0  # main speed source A
+ADDR_SPEED_SRC_B = 0x0600+1  # aux speed source B
+ADDR_SPEED_SRC_SEL = 0x0600+2  # speed command source
+ADDR_VDI_ENABLE = 0x0C00+9  # comm VDI enable
+ADDR_VDI_LEVEL = 0x3100+0  # VDI virtual
+ADDR_MULTI_SPEED_HEAD=0x1200+0
+ADDR_MULTI_SPEED_FIRST=0x1200+20
 ADDR_DI_FLAGS=0x0300
 
-ADDR_ANALOG_OFFSET=0x0336
-ADDR_ANALOG_TIME_CTE=0x0337
-ADDR_ANALOG_DEADZONE=0x0339
-ADDR_ANALOG_DRIFT=0x0340
-ADDR_ANALOG_SPEED_10V=0x0351
+ADDR_ANALOG_OFFSET=0x0300+36
+ADDR_ANALOG_TIME_CTE=0x0300+37
+ADDR_ANALOG_DEADZONE=0x0300+39
+ADDR_ANALOG_DRIFT=0x0300+40
+ADDR_ANALOG_SPEED_10V=0x0300+51
 
-ADDR_POS_SRC_SEL=0x0500
-ADDR_MULTI_POS_HEAD=0x1100
-ADDR_MULTI_POS_FIRST=0x1112
+ADDR_POS_SRC_SEL=0x0500+0
+ADDR_MULTI_POS_HEAD=0x1100+0
+ADDR_MULTI_POS_FIRST=0x1100+12
 
 REG_P0B_07 = 0x0B07  # P0B-07 (abs pos, 32-bit) - historical naming
 REG_P0B_09 = 0x0B09  # P0B-09 (pos per revolution, 0..65535)
@@ -94,31 +86,24 @@ class Motor:
         print(":::::STOPING MOTOR::::::")
         self.client.write_register(ADDR_VDI_LEVEL, 0 )
     
-    def speed_mode(self):
-    # P31-00 = 0 (VDI STOP)
-        self.client.write_register(ADDR_VDI_LEVEL, 0 )    
-    # P0C-09 = 1 (Comm VDI)
-        self.client.write_register(ADDR_VDI_ENABLE, 1)
-       
-    # P03-02 = 0 (DI1 func)
-        self.client.write_register(ADDR_DI1_FN, 0)
-        
-    # P02-00 = 0 (control mode speed)
-        self.client.write_register(ADDR_CTRL_MODE, 0)
-        
-    # P06-00 = 0 (A src = given)
-        self.client.write_register(ADDR_SPEED_SRC_A, 0)
-        
-    # P06-01 = 3 (B src = 0)
-        self.client.write_register(ADDR_SPEED_SRC_B, 3)
-        
-    # P06-02 = 0 (sel = A)
-        self.client.write_register(ADDR_SPEED_SRC_SEL, 0)
-
-
     def __del__(self):
         self.client.close()
- 
+
+    def _write(self,addr:int,value:int):
+        r=self.client.write_register(addr,value)
+        if r.isError():
+            print(r)
+            raise RuntimeError("MODBUS WRITE FAILED")
+    
+
+    def _read(self,addr:int):
+        r=self.client.read_holding_registers(addr)
+        if r.isError(): 
+            print(r)
+            raise RuntimeError("MODBUS READ FAILED")
+        else:
+            value=r.registers[0]
+            return value
 
 #NOTE: THIS THROWS ERROR
     def analog_mode(self): 
@@ -209,12 +194,10 @@ class Motor:
         data=[0,5,1]
         self.client.write_registers(ADDR_SPEED_SRC_A,data)
         #set multi speed params
+        
+        n_segments=len(times)
 
-        SEGMENT_TIME=1 # 0.1 secs
-        NUM_SEGMENTS=2
-        MAX_VALUE=120
-
-        data=[1,NUM_SEGMENTS,0]  #header 
+        data=[1,n_segments,0]  #header 
         self.client.write_registers(ADDR_MULTI_SPEED_HEAD,data)
     
 
@@ -222,264 +205,18 @@ class Motor:
         t=0
         for dt in times:
             t=t+dt
-            speed=np.floor(f(t))
+            speed=int(np.floor(f(t)))
             if speed<0:
                 speed=speed & 0xFFFF
             data.append(speed)
-            data.append(dt)
+            data.append(int(dt))
             data.append(0)
 
-        self.client.write_registers(ADDR_MULTI_SPEED_FIRST,data)
-        #read=motor.read_holding_registers(ADDR_MULTI_SPEED_FIRST)
-        #print(read)
-
-   
-
-    def acc_ctrl(self,f,times): 
-        assert(len(times)<=16),"TIMES ARRAY CANT BE BIGGER THAN 16 ELEMENTS"
-        print(":::::SETTING TORQUE SINE::::::")
-    #NOTE:  I dont know what any of these do, keep it just to be safe.
-        self.client.write_register(ADDR_VDI_LEVEL, 0 )  
-        self.client.write_register(ADDR_VDI_ENABLE, 1 ) 
-        self.client.write_register(ADDR_DI1_FN, 0 )
-    
-    # Set mode to position
-        self.client.write_register(ADDR_CTRL_MODE, 1 )
-       
-        self.client.write_register(ADDR_POS_SRC_SEL,2) #muti segment
-
-
-        #sets speed command to multi segment
-        data=[0,5,1]
-        #set multi speed params
-
-        SEGMENT_TIME=1 # 0.1 secs
-        NUM_SEGMENTS=2
-        MAX_VALUE=120
-
-        data=[1,NUM_SEGMENTS,1,1,0,0]  #header  
-        self.client.write_registers(ADDR_MULTI_POS_HEAD,data)
-
-        data=[]
-        points = np.linspace(0, 2 * np.pi, NUM_SEGMENTS)
-        t=0
-        for dt in times:
-            t=t+dt
-            pos=np.floor(f(t))
-            pos_high=(pos >> 16)& 0xFFFF
-            pos_low=pos & 0xFFFF
-        #if pos<0:
-        #    pos_high=pos >> 16
-        #    pos_low=pos & 0xFFFF
-            data.append(pos_high)
-            data.append(pos_low)
-            speed=100#TODO:do calc on this
-            data.append(speed)
-            accel=100#TODO:DO CALC ON THIS
-            data.append(accel)
-            wait=0
-            data.append(wait)
-            data.append(dt)
-            data.append(0)
-
-        self.client.write_registers(ADDR_MULTI_POS_FIRST,data)
-
-def motor_start(motor): 
-    print(":::::STARTING MOTOR::::::")
-    motor.write_register(ADDR_VDI_LEVEL, 1 )
-
-def motor_stop(motor):
-    print(":::::STOPING MOTOR::::::")
-    motor.write_register(ADDR_VDI_LEVEL, 0 )
-    
-
-def motor_speed_mode(motor):
-    SLAVE_ID=1
-    # P31-00 = 0 (VDI STOP)
-    motor.write_register(ADDR_VDI_LEVEL, 0 )    
-    # P0C-09 = 1 (Comm VDI)
-    motor.write_register(ADDR_VDI_ENABLE, 1)
-       
-    # P03-02 = 0 (DI1 func)
-    motor.write_register(ADDR_DI1_FN, 0)
-        
-    # P02-00 = 0 (control mode speed)
-    motor.write_register(ADDR_CTRL_MODE, 0)
-        
-    # P06-00 = 0 (A src = given)
-    motor.write_register(ADDR_SPEED_SRC_A, 0)
-        
-    # P06-01 = 3 (B src = 0)
-    motor.write_register(ADDR_SPEED_SRC_B, 3)
-        
-    # P06-02 = 0 (sel = A)
-    motor.write_register(ADDR_SPEED_SRC_SEL, 0)
-
-
-#NOTE: THIS THROWS ERROR
-def motor_pos_sin(motor): 
-    print(":::::SETTING POSITION SINE::::::")
-    #NOTE:  I dont know what any of these do, keep it just to be safe.
-    motor.write_register(ADDR_VDI_LEVEL, 0 )  
-    motor.write_register(ADDR_VDI_ENABLE, 1 ) 
-    motor.write_register(ADDR_DI1_FN, 0 )
-    
-    # Set mode to position
-    motor.write_register(ADDR_CTRL_MODE, 1 )
-       
-    motor.write_register(ADDR_POS_SRC_SEL,2) #muti segment
-
-    SEGMENT_TIME=1 # 0.1 secs
-    NUM_SEGMENTS=2
-    MAX_VALUE=120
-
-    data=[1,NUM_SEGMENTS,1,1,0,0]  #header  
-    motor.write_registers(ADDR_MULTI_POS_HEAD,data)
-
-    data=[]
-    points = np.linspace(0, np.pi, NUM_SEGMENTS)
-    for i in points:
-        pos=np.floor(MAX_VALUE * np.sin(i))
-        pos_high=(pos >> 16)& 0xFFFF
-        pos_low=pos & 0xFFFF
-        #if pos<0:
-        #    pos_high=pos >> 16
-        #    pos_low=pos & 0xFFFF
-        data.append(pos_high)
-        data.append(pos_low)
-        speed=100#TODO:do calc on this
-        data.append(speed)
-        accel=100#TODO:DO CALC ON THIS
-        data.append(accel)
-        wait=0
-        data.append(wait)
-        data.append(SEGMENT_TIME)
-        data.append(0)
-
-    motor.write_registers(ADDR_MULTI_POS_FIRST,data)
-    #read=motor.read_holding_registers(ADDR_MULTI_POS_FIRST,len(data))
-    #print(read)
-
-
-
-#NOTE: THIS THROWS ERROR
-def motor_vel_sin(motor): 
-    print(":::::SETTING SPEED SINE::::::")
-    #NOTE:  I dont know what any of these do, keep it just to be safe.
-    motor.write_register(ADDR_VDI_LEVEL, 0 )  
-    motor.write_register(ADDR_VDI_ENABLE, 1 ) 
-    motor.write_register(ADDR_DI1_FN, 0 )
-    
-    # Set mode to speed
-    motor.write_register(ADDR_CTRL_MODE, 0 )
-        
-
-    #sets speed command to multi segment
-    data=[0,5,1]
-    motor.write_registers(ADDR_SPEED_SRC_A,data)
-    #set multi speed params
-
-    SEGMENT_TIME=1 # 0.1 secs
-    NUM_SEGMENTS=2
-    MAX_VALUE=120
-
-    data=[1,NUM_SEGMENTS,0]  #header 
-    motor.write_registers(ADDR_MULTI_SPEED_HEAD,data)
-    
-
-    data=[]
-    points = np.linspace(0, 2 * np.pi, NUM_SEGMENTS)
-    for i in points:
-        speed=np.floor(MAX_VALUE * np.sin(i))
-        if speed<0:
-            speed=speed & 0xFFFF
-        data.append(speed)
-        data.append(SEGMENT_TIME)
-        data.append(0)
-
-    motor.write_registers(ADDR_MULTI_SPEED_FIRST,data)
-    read=motor.read_holding_registers(ADDR_MULTI_SPEED_FIRST)
-    print(read)
-
-#NOTE: THIS THROWS ERROR
-def motor_acc_sin(motor): 
-    print(":::::SETTING TORQUE SINE::::::")
-    #NOTE:  I dont know what any of these do, keep it just to be safe.
-    motor.write_register(ADDR_VDI_LEVEL, 0 )  
-    motor.write_register(ADDR_VDI_ENABLE, 1 ) 
-    motor.write_register(ADDR_DI1_FN, 0 )
-    
-    # Set mode to position
-    motor.write_register(ADDR_CTRL_MODE, 1 )
-       
-    motor.write_register(ADDR_POS_SRC_SEL,2) #muti segment
-
-
-    #sets speed command to multi segment
-    data=[0,5,1]
-    #set multi speed params
-
-    SEGMENT_TIME=1 # 0.1 secs
-    NUM_SEGMENTS=2
-    MAX_VALUE=120
-
-    data=[1,NUM_SEGMENTS,1,1,0,0]  #header  
-    motor.write_registers(ADDR_MULTI_POS_HEAD,data)
-
-    data=[]
-    points = np.linspace(0, 2 * np.pi, NUM_SEGMENTS)
-    for i in points:
-        pos=np.floor(MAX_VALUE * np.sin(i))
-        pos_high=(pos >> 16)& 0xFFFF
-        pos_low=pos & 0xFFFF
-        #if pos<0:
-        #    pos_high=pos >> 16
-        #    pos_low=pos & 0xFFFF
-        data.append(pos_high)
-        data.append(pos_low)
-        speed=100#TODO:do calc on this
-        data.append(speed)
-        accel=100#TODO:DO CALC ON THIS
-        data.append(accel)
-        wait=0
-        data.append(wait)
-        data.append(SEGMENT_TIME)
-        data.append(0)
-
-    motor.write_registers(ADDR_MULTI_POS_FIRST,data)
-    #read=motor.read_holding_registers(ADDR_MULTI_POS_FIRST,len(data))
-    #print(read)
-
-
-
-
-#NOTE: THIS THROWS ERROR
-def motor_switch_analog(motor): 
-    print(":::::SWITCHING TO ANALOG INPUT::::::")
-    #NOTE:  I dont know what any of these do, keep it just to be safe.
-    motor.write_register(ADDR_VDI_LEVEL, 0 )  
-    motor.write_register(ADDR_VDI_ENABLE, 1 ) 
-    motor.write_register(ADDR_DI1_FN, 0 )
-    
-    # Set mode to speed
-    motor.write_register(ADDR_CTRL_MODE, 0 )
-        
-
-    #sets speed command to analog A
-    data=[1,2,0]
-    motor.write_registers(ADDR_SPEED_SRC_A,data)
-    
-    #set Analog input params 
-    motor.write_register(ADDR_ANALOG_OFFSET,0)
-
-    motor.write_register(ADDR_ANALOG_TIME_CTE,0)
-    motor.write_register(ADDR_ANALOG_DEADZONE,0)
-    motor.write_register(ADDR_ANALOG_DRIFT,0)
-    motor.write_register(ADDR_ANALOG_DRIFT,0)
-    motor.write_register(ADDR_ANALOG_SPEED_10V,500)
-    
-    #read=motor.read_holding_registers(ADDR_MULTI_SPEED_FIRST)
-    #print(read)
+        for i,d in enumerate(data):
+            self._write(ADDR_MULTI_SPEED_FIRST+i,d)
+            v=self._read(ADDR_MULTI_SPEED_FIRST+i)
+            assert(d==v),f"VALUE WRITE ERROR: TRIED TO WRITE {d}, READ BACK IS {v}"
+        #self.client.write_registers(ADDR_MULTI_SPEED_FIRST,data)
 
 
 def try_loop(func):
@@ -493,7 +230,7 @@ def try_loop(func):
 
 #NOTE:  MAIN SCRIPT 
 
-NUM_SEGMENTS=16
+NUM_SEGMENTS=8
 SEG_TIME=1
 times = np.ones(NUM_SEGMENTS)*SEG_TIME  #np.linspace(0, 2 * np.pi, NUM_SEGMENTS)
 
@@ -505,13 +242,7 @@ f_sine=lambda i: 25*np.sin(FREQ*i)
 
 try_loop(lambda:motor.stop())
 
-try_loop(lambda:motor.pos_ctrl(f_sine,times))
-
-#try_loop(lambda:motor.vel_ctrl(f_sine,times))
-#try_loop(lambda:motor.acc_ctrl(f_sine,times))
-
-
-
+motor.vel_ctrl(f_sine,times)
 
 try_loop(lambda:motor.start())
    
