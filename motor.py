@@ -18,7 +18,7 @@ RECIP_ENCODER_ORIGIN_TIMEOUT_S = 3.0
 #Modbus client params
 MODBUS_PORT=f"COM{5}"
 MODBUS_SLAVE_ID=1
-MODBUS_BAUD_RATE=115200
+MODBUS_BAUD_RATE=11900#115200
 MODBUS_PARITY="E"
 MODBUS_STOPBITS=1
 MODBUS_BYTESIZE=8
@@ -94,7 +94,21 @@ class Motor:
         if r.isError():
             print(r)
             raise RuntimeError("MODBUS WRITE FAILED")
-    
+   
+    def _write_many(self,head:int,values):
+        r=self.client.write_registers(head,values)
+        if r.isError():
+            print(r)
+            raise RuntimeError("MODBUS WRITE FAILED")
+   
+    def _read_many(self,head:int,count:int):
+        r=self.client.read_holding_registers(head,count=count)
+        if r.isError():
+            print(r)
+            raise RuntimeError("MODBUS READ FAILED")
+        else:
+            return r.registers
+
 
     def _read(self,addr:int):
         r=self.client.read_holding_registers(addr)
@@ -145,11 +159,8 @@ class Motor:
        
         self.client.write_register(ADDR_POS_SRC_SEL,2) #muti segment
 
-        SEGMENT_TIME=1 # 0.1 secs
-        NUM_SEGMENTS=2
-        MAX_VALUE=120
-
-        data=[1,NUM_SEGMENTS,1,1,0,0]  #header  
+        n_segments=len(times)
+        data=[1,n_segments,1,1,0,0]  #header  
         self.client.write_registers(ADDR_MULTI_POS_HEAD,data)
 
         data=[]
@@ -173,9 +184,10 @@ class Motor:
             data.append(dt)
             data.append(0)
 
-        self.client.write_registers(ADDR_MULTI_POS_FIRST,data)
-        #read=motor.read_holding_registers(ADDR_MULTI_POS_FIRST,len(data))
-        #print(read)
+        self._write_many(ADDR_MULTI_POS_FIRST,data) 
+        readback=self._read_many(ADDR_MULTI_SPEED_FIRST,len(data))
+        for input,output in zip(data,readback):
+            assert(input==output),f"VALUE WRITE ERROR: TRIED TO WRITE {input}, READ BACK IS {output}"
 
  
 #NOTE: THIS THROWS ERROR
