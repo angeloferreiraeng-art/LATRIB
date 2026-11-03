@@ -1,1 +1,0 @@
-#Global application state definitions

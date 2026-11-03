@@ -1,0 +1,156 @@
+# Global application state definitions
+
+import threading
+import time
+import numpy as np
+from queue import Queue, Empty, Full
+
+from motor import Motor, MotorConfig
+from dlg400 import Sensors, SensorsConfig
+
+STATE_INIT = "INIT"
+STATE_ERROR = "ERROR"
+STATE_READY = "READY"
+STATE_RUNNING = "RUNNING"
+STATE_STOP = "STOP"
+
+SENSORS_FAILED = threading.Event()
+MOTOR_FAILED = threading.Event()
+
+
+def _pop_from(queue:Queue)->str|None:
+    if queue.empty():
+        return None
+    else
+        return queue.get()
+
+def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue):
+    print("MOTOR THREAD LAUNCHED")
+    try:
+        config = MotorConfig()
+        motor = Motor(config)
+        motor.stop()
+    except Exception as e:
+        print(f"Motor initialization failure: {e}")
+        fail_event.set()
+        return
+
+    NUM_SEGMENTS = 16
+    SEG_TIME = 1
+    times = np.ones(NUM_SEGMENTS) * SEG_TIME
+    period = np.sum(times)
+    angular_speed = 2 * np.pi / (period)
+    print("freq:", angular_speed)
+    MAX_VAL = 50
+
+    f_sine = lambda i: 100 * MAX_VAL * np.sin(angular_speed * i)
+    current_cmd = None
+
+    while True:
+        try:
+            new_cmd = _pop_from(cmd_buffer)
+            match new_cmd:
+                case "VEL_CTRL":
+                    motor.vel_ctrl(f_sine, times)
+                case "POS_CTRL":
+                    motor.vel_ctrl(f_sine, times)
+                case "ANALOG_MODE":
+                    motor.analog_mode()
+                case "START":
+                    motor.start()
+                case "STOP":
+                    motor.stop()
+                case None:
+                    pass
+        except Exception as e:
+            print(f"Motor operation failure: {e}")
+            fail_event.set()
+            return
+
+
+# top level scope for the dlg400 sensor thread
+def _run_sensor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue):
+    config = SensorsConfig()
+    sensors = Sensors(config)
+
+    sensors.set_nonblocking()
+
+    # acquisition loop
+    reading = False
+    #sensors.acq_start()
+    while True:
+        try:
+            new_cmd = _pop_from(cmd_buffer)
+            match new_cmd:
+                case "START":
+                    sensors.start()
+                    reading = True
+                case "STOP":
+                    sensors.stop()
+                    reading = False
+                case None:
+                    pass
+            if reading:
+                bytes = sensors.read()
+                out_buffer.put(bytes)
+
+        except Exception as e:
+            print(f"Sensors failed: {e}")
+            fail_event.set()
+            return
+
+
+def global_config():
+    config = {"MOTOR_PORT": "COM5", "MOTOR_ID": 1, "MOTOR_BAUD_RATE": 19200}
+    return config
+
+
+class Orchestrator:
+    """Top class state object"""
+
+    def __init__(self) -> None:
+        self.state = STATE_INIT
+        self.motor_thread = None
+        self.sensor_thread = None
+
+        self.motor_fail = threading.Event()
+        self.motor_cmd = Queue()
+        self.motor_out = Queue()
+
+        self.sensors_fail = threading.Event()
+        self.sensors_cmd = Queue()
+        self.sensors_out = Queue()
+
+    def launch(self):
+        try:
+            self.motor_thread = threading.Thread(
+                target=_run_motor,
+                args=(self.motor_fail, self.motor_cmd, self.motor_out),
+                daemon=True,
+            )
+            self.motor_thread.start()
+
+            self.sensor_thread = threading.Thread(
+                target=_run_sensor,
+                args=(self.sensors_fail, self.sensors_cmd, self.sensors_out),
+                daemon=True,
+            )
+            self.sensor_thread.start()
+
+            self.state = STATE_READY
+        except Exception as e:
+            print("::::Orchestrator launch failed!:::::")
+            self.state = STATE_ERROR
+
+    def pause(self):
+        self.motor_cmd.put("STOP")
+        self.sensors_cmd.put("STOP")
+
+    def begin(self):
+        self.motor_cmd.put("START")
+        self.sensors_cmd.put("START")
+
+    def update(self):
+        if self.motor_fail.is_set() or self.sensors_fail.is_set():
+            print("FOUND ERROR DURING UPDATE")
+            self.state = STATE_ERROR
