@@ -85,6 +85,10 @@ class MotorConfig:
 
 
 class Motor:
+    client: ModbusSerialClient
+    state: str = "INIT"
+    mode: str = "NONE"
+
     def __init__(self, config: MotorConfig | None):
         if not config:
             config = MotorConfig()  # default value
@@ -104,7 +108,9 @@ class Motor:
             raise RuntimeError(f"CONNECTION ERROR:::{e}")
 
     def __del__(self):
-        self.client.close()
+        client = getattr(self, "client", None)
+        if client is not None:
+            client.close()
 
     def _write(self, addr: int, value: int):
         r = self.client.write_register(addr, value)

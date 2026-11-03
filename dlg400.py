@@ -109,7 +109,7 @@ class Sensors:
         # configure channels
         channels = []
         for ch in range(DEFAULT_CHANNELS):
-            channels.append(load_calib_for_channel(ch + 1, ev.log) or ChannelConfig())
+            channels.append(load_calib_for_channel(ch + 1) or ChannelConfig())
         enc_ch = channels[ENCODER_CHANNEL - 1]
         if c.encoder_state_out_path and (
             not enc_ch.calibrated
@@ -428,42 +428,6 @@ class Ring:
 
 
 # --------------------------------------------------------------------------
-# Event log
-# --------------------------------------------------------------------------
-class EventLog:
-    """``dlg_logger_events.log`` written next to the main CSV."""
-
-    def __init__(self) -> None:
-        self._f = None
-
-    def open_for_out(self, out_path: str) -> None:
-        ev_path = os.path.join(os.path.dirname(out_path), "dlg_logger_events.log")
-        try:
-            self._f = open(ev_path, "w", encoding="utf-8")
-        except OSError:
-            self._f = None
-
-    def close(self) -> None:
-        if self._f:
-            try:
-                self._f.close()
-            finally:
-                self._f = None
-
-    def log(self, msg: str) -> None:
-        if not self._f:
-            return
-        now = datetime.now()
-        self._f.write(
-            "[%02d:%02d:%02d.%03d] %s\n"
-            % (now.hour, now.minute, now.second, now.microsecond // 1000, msg)
-        )
-        self._f.flush()
-
-    __call__ = log
-
-
-# --------------------------------------------------------------------------
 # Calibration (text based parsing, identical semantics to the C helpers)
 # --------------------------------------------------------------------------
 _INT_RE = re.compile(r"[+-]?[0-9]+")
@@ -575,9 +539,7 @@ def get_encoder_calib_path() -> Optional[str]:
     return os.path.join(base, ENCODER_CALIB_SUBPATH)
 
 
-def load_encoder_angle_calibration(
-    log: Callable[[str], None] = lambda m: None,
-) -> Optional[ChannelConfig]:
+def load_encoder_angle_calibration() -> ChannelConfig | None:
     path = get_encoder_calib_path()
     if not path:
         return None
@@ -613,10 +575,6 @@ def load_encoder_angle_calibration(
     if not math.isfinite(s) or not math.isfinite(b) or s == 0.0:
         return None
     ts, lpf, gain, power, dc, ac = ints
-    log(
-        "ENCODER_CALIB loaded path=%s slope=%.15g intercept=%.15g filter=none"
-        % (path, s, b)
-    )
     return ChannelConfig(
         slope=s,
         intercept=b,
@@ -632,12 +590,10 @@ def load_encoder_angle_calibration(
     )
 
 
-def load_calib_for_channel(
-    ch: int, log: Callable[[str], None] = lambda m: None
-) -> Optional[ChannelConfig]:
+def load_calib_for_channel(ch: int) -> ChannelConfig | None:
     """Per-channel calibration; ``ch`` is 1-based.  None when not available."""
     if ch == ENCODER_CHANNEL:
-        return load_encoder_angle_calibration(log)
+        return load_encoder_angle_calibration()
 
     paths = [
         "calib.json",
