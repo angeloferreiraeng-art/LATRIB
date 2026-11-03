@@ -1,5 +1,6 @@
 import threading
 import time
+import numpy as np
 
 from motor import Motor
 import dlg400 as dlg
