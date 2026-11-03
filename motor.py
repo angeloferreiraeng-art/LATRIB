@@ -1,6 +1,7 @@
 from pymodbus.client import ModbusSerialClient
 from pymodbus.exceptions import ModbusException
 import numpy as np
+import math
 
 CMD_RESP_US = 50000
 CMD_BYTE_US = 50000
@@ -18,7 +19,7 @@ RECIP_ENCODER_ORIGIN_TIMEOUT_S = 3.0
 #Modbus client params
 MODBUS_PORT=f"COM{5}"
 MODBUS_SLAVE_ID=1
-MODBUS_BAUD_RATE=115200
+MODBUS_BAUD_RATE=19200#115200
 MODBUS_PARITY="E"
 MODBUS_STOPBITS=1
 MODBUS_BYTESIZE=8
@@ -50,6 +51,13 @@ ADDR_ANALOG_SPEED_10V=0x0300+51
 ADDR_POS_SRC_SEL=0x0500+0
 ADDR_MULTI_POS_HEAD=0x1100+0
 ADDR_MULTI_POS_FIRST=0x1100+12
+ADDR_PULSE_PER_ROT=0x0500+2
+
+ADDR_VDI_FN1=0X1700+0
+ADDR_VDI_FN2=0X1700+2
+
+ADDR_POS_LOW_PASS=0x0500+4
+ADDR_POS_TIME_CTE=0X0500+6
 
 REG_P0B_07 = 0x0B07  # P0B-07 (abs pos, 32-bit) - historical naming
 REG_P0B_09 = 0x0B09  # P0B-09 (pos per revolution, 0..65535)
@@ -80,7 +88,7 @@ class Motor:
 
     def start(self):
         print(":::::STARTING MOTOR::::::")
-        self.client.write_register(ADDR_VDI_LEVEL, 1 )
+        self.client.write_register(ADDR_VDI_LEVEL, 0b11 )
     
     def stop(self):
         print(":::::STOPING MOTOR::::::")
@@ -94,6 +102,16 @@ class Motor:
         if r.isError():
             print(r)
             raise RuntimeError("MODBUS WRITE FAILED")
+
+    def _write_u32(self,addr:int,value:int):
+        assert(np.abs(value)<(1<<31)),"POSITION TOO BIG"
+        b_high=(value >> 16)& 0xFFFF
+        b_low=value & 0xFFFF
+        #print(b_high,b_low)
+        r=self.client.write_registers(addr,[b_low,b_high])
+        if r.isError():
+            print(r)
+            raise RuntimeError("MODBUS WRITE FAILED")
     
 
     def _read(self,addr:int):
@@ -104,6 +122,14 @@ class Motor:
         else:
             value=r.registers[0]
             return value
+
+    def _read_many(self,addr:int,count:int):
+        r=self.client.read_holding_registers(addr,count=count)
+        if r.isError(): 
+            print(r)
+            raise RuntimeError("MODBUS READ FAILED")
+        else:
+            return r.registers
 
 #NOTE: THIS THROWS ERROR
     def analog_mode(self): 
@@ -135,47 +161,57 @@ class Motor:
     def pos_ctrl(self,f,times):
         assert(len(times)<=16),"TIMES ARRAY CANT BE BIGGER THAN 16 ELEMENTS"
         print(":::::SETTING POSITION SINE::::::")
+        PULSE_PER_ROT=10000
     #NOTE:  I dont know what any of these do, keep it just to be safe.
         self.client.write_register(ADDR_VDI_LEVEL, 0 )  
         self.client.write_register(ADDR_VDI_ENABLE, 1 ) 
         self.client.write_register(ADDR_DI1_FN, 0 )
+
+        self.client.write_register(ADDR_VDI_FN1, 1 )
+        self.client.write_register(ADDR_VDI_FN2, 28 )
+
     
     # Set mode to position
         self.client.write_register(ADDR_CTRL_MODE, 1 )
        
         self.client.write_register(ADDR_POS_SRC_SEL,2) #muti segment
+        self.client.write_register(ADDR_PULSE_PER_ROT, 500)#PULSE_PER_ROT )
+        self.client.write_register(ADDR_POS_LOW_PASS, 10)
+        self.client.write_register(ADDR_POS_TIME_CTE, 10)
 
-        SEGMENT_TIME=1 # 0.1 secs
-        NUM_SEGMENTS=2
-        MAX_VALUE=120
 
-        data=[1,NUM_SEGMENTS,1,1,0,0]  #header  
+        n_segments=len(times)
+
+        TIME_UNIT=0
+        data=[1,n_segments,0,TIME_UNIT,0,1]  #header  
         self.client.write_registers(ADDR_MULTI_POS_HEAD,data)
 
         data=[]
         t=0
+        x0=f(times[-1])
+        addr=ADDR_MULTI_POS_FIRST
         for dt in times:
             t=t+dt
-            pos=np.floor(f(t))
-            pos_high=(pos >> 16)& 0xFFFF
-            pos_low=pos & 0xFFFF
-        #if pos<0:
-        #    pos_high=pos >> 16
-        #    pos_low=pos & 0xFFFF
-            data.append(pos_high)
-            data.append(pos_low)
-            speed=100#TODO:do calc on this
-            data.append(speed)
-            accel=100#TODO:DO CALC ON THIS
-            data.append(accel)
+            raw=f(t)#voltas
+            x1=int(np.floor(PULSE_PER_ROT*raw))
+            self._write_u32(addr,x1)
+            addr=addr+2
+            speed=int((x1-x0)/dt)&0xFFFF
+            print(x0,x1,speed)
+            x0=x1
+            self._write(addr,speed)
+            addr=addr+1
+            accel=int(500*dt)#TODO:DO CALC ON THIS
+            self._write(addr,accel)
+            addr=addr+1
             wait=0
-            data.append(wait)
-            data.append(dt)
-            data.append(0)
+            self._write(addr,wait)
+            addr=addr+1
 
-        self.client.write_registers(ADDR_MULTI_POS_FIRST,data)
-        #read=motor.read_holding_registers(ADDR_MULTI_POS_FIRST,len(data))
+        read=self._read_many(ADDR_MULTI_POS_FIRST,5*len(times))
         #print(read)
+        #for a,b in zip(data,read):
+            #assert(a==b),f"VALUE WRITE ERROR: TRIED TO WRITE {a}, READ BACK IS {b}"
 
  
 #NOTE: THIS THROWS ERROR
@@ -208,10 +244,12 @@ class Motor:
             speed=int(np.floor(f(t)))
             if speed<0:
                 speed=speed & 0xFFFF
+            print(speed)
             data.append(speed)
             data.append(int(dt))
             data.append(0)
 
+        #self._write_many(ADDR_MULTI_SPEED_FIRST,data)
         for i,d in enumerate(data):
             self._write(ADDR_MULTI_SPEED_FIRST+i,d)
             v=self._read(ADDR_MULTI_SPEED_FIRST+i)
@@ -228,21 +266,38 @@ def try_loop(func):
             print(f"THREW Exception {e}, retrying operation")
             N_TRIES=N_TRIES-1
 
+
+
 #NOTE:  MAIN SCRIPT 
 
-NUM_SEGMENTS=8
+NUM_SEGMENTS=16
 SEG_TIME=1
 times = np.ones(NUM_SEGMENTS)*SEG_TIME  #np.linspace(0, 2 * np.pi, NUM_SEGMENTS)
-
+period=np.sum(times)
 motor=Motor()    
 
-FREQ=1.5/(2*np.pi)
-MAX_VAL=25
-f_sine=lambda i: 25*np.sin(FREQ*i)
+freq=1/(period)
+print("freq:",freq)
+MAX_VAL=50
+
+def test(i):
+    freq=16
+    v=math.fmod(i,freq)/freq
+    if v>=0.5:
+        return -MAX_VAL
+    else:
+        return MAX_VAL
+
+f_sine=lambda i: 100*MAX_VAL*np.sin(freq*i)
+
+r_sine=lambda i: 0.1*np.sin(freq*i)
 
 try_loop(lambda:motor.stop())
 
-motor.vel_ctrl(f_sine,times)
+#motor.vel_ctrl(test,times)
+#motor.vel_ctrl(f_sine,times)
+#motor.pos_ctrl(r_sine,times)
 
-try_loop(lambda:motor.start())
+#try_loop(lambda:motor.start())
+
    
