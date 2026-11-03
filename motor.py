@@ -68,8 +68,8 @@ REG_P05_02 = 0x0502  # P05-02 (command units per revolution)
 REG_P0C_26 = 0x0C26  # word order
 
 
-
 class Motor:
+
     def __init__(self) -> None:
         
         try:
@@ -82,18 +82,11 @@ class Motor:
                 timeout=(100 / 1_000_000) + 0.1
             )
             self.client.connect()
+            self.state="READY"
+            self.mode="NONE"
         except Exception as e:
-            print(f"CONNECTION ERROR:::{e}")
-            exit(1)            
+            raise RuntimeError(f"CONNECTION ERROR:::{e}")
 
-    def start(self):
-        print(":::::STARTING MOTOR::::::")
-        self.client.write_register(ADDR_VDI_LEVEL, 0b11 )
-    
-    def stop(self):
-        print(":::::STOPING MOTOR::::::")
-        self.client.write_register(ADDR_VDI_LEVEL, 0 )
-    
     def __del__(self):
         self.client.close()
 
@@ -130,17 +123,28 @@ class Motor:
             raise RuntimeError("MODBUS READ FAILED")
         else:
             return r.registers
-
-#NOTE: THIS THROWS ERROR
+    
+    def start(self):
+        print(f":::::STARTING MOTOR WITH MODE {self.mode}::::::")
+        if self.mode=="NONE":
+            raise RuntimeError("Trying to run motor on undefined mode.")
+        self._write(ADDR_VDI_LEVEL, 0b11 )
+        self.state="RUN"
+    
+    def stop(self):
+        print(":::::STOPING MOTOR::::::")
+        self._write(ADDR_VDI_LEVEL, 0 )
+        self.state="STOP"
+    
     def analog_mode(self): 
         print(":::::SWITCHING TO ANALOG INPUT::::::")
         #NOTE:  I dont know what any of these do, keep it just to be safe.
-        self.client.write_register(ADDR_VDI_LEVEL, 0 )  
-        self.client.write_register(ADDR_VDI_ENABLE, 1 ) 
-        self.client.write_register(ADDR_DI1_FN, 0 )
+        self._write(ADDR_VDI_LEVEL, 0 )  
+        self._write(ADDR_VDI_ENABLE, 1 ) 
+        self._write(ADDR_DI1_FN, 0 )
     
         # Set mode to speed
-        self.client.write_register(ADDR_CTRL_MODE, 0 )
+        self._write(ADDR_CTRL_MODE, 0 )
         
 
         #sets speed command to analog A
@@ -148,13 +152,14 @@ class Motor:
         self.client.write_registers(ADDR_SPEED_SRC_A,data)
     
         #set Analog input params 
-        self.client.write_register(ADDR_ANALOG_OFFSET,0)
+        self._write(ADDR_ANALOG_OFFSET,0)
 
-        self.client.write_register(ADDR_ANALOG_TIME_CTE,0)
-        self.client.write_register(ADDR_ANALOG_DEADZONE,0)
-        self.client.write_register(ADDR_ANALOG_DRIFT,0)
-        self.client.write_register(ADDR_ANALOG_DRIFT,0)
-        self.client.write_register(ADDR_ANALOG_SPEED_10V,500)
+        self._write(ADDR_ANALOG_TIME_CTE,0)
+        self._write(ADDR_ANALOG_DEADZONE,0)
+        self._write(ADDR_ANALOG_DRIFT,0)
+        self._write(ADDR_ANALOG_DRIFT,0)
+        self._write(ADDR_ANALOG_SPEED_10V,500)
+        self.mode="VEL_ANALOG"
     
 
 
@@ -163,12 +168,12 @@ class Motor:
         print(":::::SETTING POSITION SINE::::::")
         PULSE_PER_ROT=10000
     #NOTE:  I dont know what any of these do, keep it just to be safe.
-        self.client.write_register(ADDR_VDI_LEVEL, 0 )  
-        self.client.write_register(ADDR_VDI_ENABLE, 1 ) 
-        self.client.write_register(ADDR_DI1_FN, 0 )
+        self._write(ADDR_VDI_LEVEL, 0 )  
+        self._write(ADDR_VDI_ENABLE, 1 ) 
+        self._write(ADDR_DI1_FN, 0 )
 
-        self.client.write_register(ADDR_VDI_FN1, 1 )
-        self.client.write_register(ADDR_VDI_FN2, 28 )
+        self._write(ADDR_VDI_FN1, 1 )
+        self._write(ADDR_VDI_FN2, 28 )
 
     
     # Set mode to position
@@ -212,18 +217,19 @@ class Motor:
         #print(read)
         #for a,b in zip(data,read):
             #assert(a==b),f"VALUE WRITE ERROR: TRIED TO WRITE {a}, READ BACK IS {b}"
+        self.mode="POS_SEC"
 
  
 #NOTE: THIS THROWS ERROR
     def vel_ctrl(self,f,times):
         assert(len(times)<=16),"TIMES ARRAY CANT BE BIGGER THAN 16 ELEMENTS"
         print(":::::SETTING SPEED SINE::::::")
-        self.client.write_register(ADDR_VDI_LEVEL, 0 )  
-        self.client.write_register(ADDR_VDI_ENABLE, 1 ) 
-        self.client.write_register(ADDR_DI1_FN, 0 )
+        self._write(ADDR_VDI_LEVEL, 0 )  
+        self._write(ADDR_VDI_ENABLE, 1 ) 
+        self._write(ADDR_DI1_FN, 0 )
     
         # Set mode to speed
-        self.client.write_register(ADDR_CTRL_MODE, 0 )
+        self._write(ADDR_CTRL_MODE, 0 )
         
 
         #sets speed command to multi segment
@@ -255,10 +261,7 @@ class Motor:
             v=self._read(ADDR_MULTI_SPEED_FIRST+i)
             assert(d==v),f"VALUE WRITE ERROR: TRIED TO WRITE {d}, READ BACK IS {v}"
         #self.client.write_registers(ADDR_MULTI_SPEED_FIRST,data)
-
-
-
-
+        self.mode="VEL_SEC"
  
 if __name__ == "__main__":
     raise RuntimeError("Motor is a library, it cannot be run directly")  
