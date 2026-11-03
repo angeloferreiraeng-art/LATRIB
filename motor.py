@@ -201,7 +201,7 @@ class Motor:
             x0=x1
             self._write(addr,speed)
             addr=addr+1
-            accel=int(500*dt)#TODO:DO CALC ON THIS
+            accel=0#int(500*dt)#TODO:DO CALC ON THIS
             self._write(addr,accel)
             addr=addr+1
             wait=0
@@ -257,47 +257,8 @@ class Motor:
         #self.client.write_registers(ADDR_MULTI_SPEED_FIRST,data)
 
 
-def try_loop(func):
-    N_TRIES=5
-    while N_TRIES:
-        try:
-            return func()
-        except Exception as e:
-            print(f"THREW Exception {e}, retrying operation")
-            N_TRIES=N_TRIES-1
 
 
-
-#NOTE:  MAIN SCRIPT 
-
-NUM_SEGMENTS=16
-SEG_TIME=1
-times = np.ones(NUM_SEGMENTS)*SEG_TIME  #np.linspace(0, 2 * np.pi, NUM_SEGMENTS)
-period=np.sum(times)
-motor=Motor()    
-
-freq=1/(period)
-print("freq:",freq)
-MAX_VAL=50
-
-def test(i):
-    freq=16
-    v=math.fmod(i,freq)/freq
-    if v>=0.5:
-        return -MAX_VAL
-    else:
-        return MAX_VAL
-
-f_sine=lambda i: 100*MAX_VAL*np.sin(freq*i)
-
-r_sine=lambda i: 0.1*np.sin(freq*i)
-
-try_loop(lambda:motor.stop())
-
-#motor.vel_ctrl(test,times)
-#motor.vel_ctrl(f_sine,times)
-#motor.pos_ctrl(r_sine,times)
-
-#try_loop(lambda:motor.start())
-
-   
+ 
+if __name__ == "__main__":
+    raise RuntimeError("Motor is a library, it cannot be run directly")  
