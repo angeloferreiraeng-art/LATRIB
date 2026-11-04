@@ -14,9 +14,6 @@ STATE_READY = "READY"
 STATE_RUNNING = "RUNNING"
 STATE_STOP = "STOP"
 
-SENSORS_FAILED = threading.Event()
-MOTOR_FAILED = threading.Event()
-
 
 def _pop_from(queue: Queue) -> str | None:
     """Helper function to return an optional result from the queue"""
@@ -110,6 +107,16 @@ class Orchestrator:
     """Top class state object"""
 
     state: str = STATE_INIT
+    motor_thread: threading.Thread | None = None
+    sensor_thread: threading.Thread | None = None
+
+    motor_fail: threading.Event = threading.Event()
+    motor_cmd: Queue = Queue()
+    motor_out: Queue = Queue()
+
+    sensors_fail: threading.Event = threading.Event()
+    sensors_cmd: Queue = Queue()
+    sensors_out: Queue = Queue()
 
     def __init__(self) -> None:
         self.state = STATE_INIT
@@ -123,6 +130,35 @@ class Orchestrator:
         self.sensors_fail = threading.Event()
         self.sensors_cmd = Queue()
         self.sensors_out = Queue()
+
+    def eval_state(
+        self, init_ok: bool = False, start_on: bool = False, stop_on: bool = False
+    ):
+        """Receives all system signals for the grafcet of the system and
+        evaluate the proper transition for the state machine
+        """
+        match self.state:
+            case STATE_ERROR:
+                pass
+            case STATE_INIT:
+                if init_ok:
+                    self.state = STATE_READY
+                else:
+                    self.state = STATE_ERROR
+            case STATE_READY:
+                if not stop_on and start_on:
+                    self.motor_cmd.put("START")
+                    self.sensors_cmd.put("START")
+                    self.state = STATE_RUNNING
+                    return
+            case STATE_RUNNING:
+                if stop_on and not start_on:
+                    self.motor_cmd.put("STOP")
+                    self.sensors_cmd.put("STOP")
+                    self.state = STATE_STOP
+
+    def check_state(self) -> str:
+        return self.state
 
     def launch(self):
         try:
@@ -164,9 +200,6 @@ class Orchestrator:
                 break
             else:
                 w.writerow([data])
-
-    def check_state(self) -> str:
-        return self.state
 
     def update(self):
         if self.motor_fail.is_set() or self.sensors_fail.is_set():
