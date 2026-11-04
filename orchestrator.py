@@ -1,10 +1,12 @@
+from io import FileIO, TextIOWrapper
 import threading
 import time
+import csv
 import numpy as np
 from queue import Queue, Empty, Full
 
 from motor import Motor, MotorConfig
-from dlg400 import Sensors, SensorsConfig
+from sensors import Sensors, SensorsConfig
 
 STATE_INIT = "INIT"
 STATE_ERROR = "ERROR"
@@ -17,6 +19,7 @@ MOTOR_FAILED = threading.Event()
 
 
 def _pop_from(queue: Queue) -> str | None:
+    """Helper function to return an optional result from the queue"""
     if queue.empty():
         return None
     else:
@@ -24,7 +27,6 @@ def _pop_from(queue: Queue) -> str | None:
 
 
 def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue):
-    print("MOTOR THREAD LAUNCHED")
     motor = None
     try:
         config = MotorConfig()
@@ -124,19 +126,19 @@ class Orchestrator:
 
     def launch(self):
         try:
-            self.motor_thread = threading.Thread(
-                target=_run_motor,
-                args=(self.motor_fail, self.motor_cmd, self.motor_out),
+            # self.motor_thread = threading.Thread(
+            #    target=_run_motor,
+            #    args=(self.motor_fail, self.motor_cmd, self.motor_out),
+            #    daemon=True,
+            # )
+            # self.motor_thread.start()
+
+            self.sensor_thread = threading.Thread(
+                target=_run_sensors,
+                args=(self.sensors_fail, self.sensors_cmd, self.sensors_out),
                 daemon=True,
             )
-            self.motor_thread.start()
-
-            # self.sensor_thread = threading.Thread(
-            #    target=_run_sensors,
-            #   args=(self.sensors_fail, self.sensors_cmd, self.sensors_out),
-            #   daemon=True,
-            # )
-            # self.sensor_thread.start()
+            self.sensor_thread.start()
 
             self.state = STATE_READY
         except Exception as e:
@@ -148,10 +150,20 @@ class Orchestrator:
         self.sensors_cmd.put("STOP")
         self.state = STATE_STOP
 
-    def begin(self):
+    def start(self):
         self.motor_cmd.put("START")
         self.sensors_cmd.put("START")
         self.state = STATE_RUNNING
+
+    def write_data(self, file: TextIOWrapper):
+        """Outputs buffered data to the given file. May fail."""
+        w = csv.writer(file)
+        while not self.sensors_out.empty():
+            data = self.sensors_out.get()
+            if data is None:
+                break
+            else:
+                w.writerow([data])
 
     def check_state(self) -> str:
         return self.state

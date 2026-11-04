@@ -68,32 +68,25 @@ _DATA_MAX_SMP = 720
 PKT_DATA_HEADER_SIZE = _DATA_HDR.size  # == offsetof(PktData, smp) == 32
 PKT_DATA_SIZE = PKT_DATA_HEADER_SIZE + 2 * _DATA_MAX_SMP
 
-SOMETHING = "10"
 Sample = Tuple[int, ...]  # DEFAULT_CHANNELS int16 values
 
 
 @dataclass
 class SensorsConfig:
-    ip_address = "192.168.1.100"
-    port = 41401
-    bind_ip = ""  # "" = 0.0.0.0
-    bind_port = 41402
-
-    slope: float = 1.0
-    intercept: float = 0.0
-    t_sensor: int = DEFAULT_TSENSOR
-    i_lpf: int = DEFAULT_ILPF
-    i_gain_idx: int = DEFAULT_IGAIN_IDX
-    i_sens_pwr: int = DEFAULT_SENSPWR_IDX
-    input_dc: int = DEFAULT_INPUT_DC
-    input_ac: int = DEFAULT_INPUT_AC
-    use_balance: int = DEFAULT_USE_BALANCE
-    normalize_degrees: bool = False
-    calibrated: bool = False
+    ip_address: str = "192.168.1.100"
+    port: int = 41401
+    bind_ip: str = ""  # "" = 0.0.0.0
+    bind_port: int = 41402
 
     @classmethod
     def from_config(cls, src: Mapping[str, Any]) -> SensorsConfig:
-        return cls()
+        return cls(
+            ip_address=src["SENSORS_IP"],
+            port=src["SENSORS_PORT"],
+            bind_ip=src["SENSORS_BIND_IP"],
+            bind_port=src["SENSORS_BIND_PORT"],
+            # parity/stop_bits/byte_size stay at defaults
+        )
 
 
 class Sensors:
@@ -107,36 +100,25 @@ class Sensors:
         self.sock.bind((config.bind_ip or "0.0.0.0", config.bind_port))
 
         # configure channels
-        channels = []
+        chan_confs = []
         for ch in range(DEFAULT_CHANNELS):
-            channels.append(load_calib_for_channel(ch + 1) or ChannelConfig())
-        enc_ch = channels[ENCODER_CHANNEL - 1]
-        if c.encoder_state_out_path and (
-            not enc_ch.calibrated
-            or not enc_ch.normalize_degrees
-            or enc_ch.t_sensor != 1
-            or enc_ch.i_gain_idx != 1
-            or enc_ch.i_lpf != 0
-        ):
-            raise RuntimeError(
-                "Calibracao angular CH3 aprovada (corrente/x3/LPF0) nao encontrada."
-            )
-
+            chan_confs.append(load_calib_for_channel(ch + 1) or ChannelConfig())
+        enc_ch = chan_confs[ENCODER_CHANNEL - 1]
         for channel in range(1, DEFAULT_CHANNELS + 1):
-            config: ChannelConfig = channels[channel - 1]
+            ch_config: ChannelConfig = chan_confs[channel - 1]
             payload = _SET_CH.pack(
                 OP_SETCHCFG,
                 0,
                 0,
                 _i16(channel),
-                _i16(config.t_sensor),
-                _i16(config.i_gain_idx),
-                _i16(config.i_lpf),
-                _i16(config.i_sens_pwr),
+                _i16(ch_config.t_sensor),
+                _i16(ch_config.i_gain_idx),
+                _i16(ch_config.i_lpf),
+                _i16(ch_config.i_sens_pwr),
                 0,
-                _u16(config.input_dc),
-                _u16(config.input_ac),
-                _u16(config.use_balance),
+                _u16(ch_config.input_dc),
+                _u16(ch_config.input_ac),
+                _u16(ch_config.use_balance),
             )
             self.sock.sendto(payload, self.addr)
         # sensors.acq_setup_multi(rate_hz, DEFAULT_CHANNELS)
@@ -153,33 +135,35 @@ class Sensors:
         self.sock.close()
 
     def send_cmd(self, payload: bytes):
-        self.sock.sendto(payload, self.addr)  # TODO: ADD ASSERT HERE
+        sent = self.sock.sendto(payload, self.addr)
 
     def stop(self) -> None:
         payload = _HDR.pack(OP_ACQSTOP, 0)
-        self.sock.sendto(payload, self.addr)
+        sent = self.sock.sendto(payload, self.addr)
+        assert sent == len(payload), "SENSOR STOP MESSAGE PROBLEM"
 
     def start(self) -> None:
         payload = _HDR.pack(OP_ACQSTART, 0)
-        self.sock.sendto(payload, self.addr)
+        sent = self.sock.sendto(payload, self.addr)
+        assert sent == len(payload), "SENSOR START MESSAGE PROBLEM"
 
     def configure_channel(self, channel: int, config: ChannelConfig) -> None:
-        self.send_cmd(
-            _SET_CH.pack(
-                OP_SETCHCFG,
-                0,
-                0,
-                _i16(channel),
-                _i16(config.t_sensor),
-                _i16(config.i_gain_idx),
-                _i16(config.i_lpf),
-                _i16(config.i_sens_pwr),
-                0,
-                _u16(config.input_dc),
-                _u16(config.input_ac),
-                _u16(config.use_balance),
-            )
+        payload = _SET_CH.pack(
+            OP_SETCHCFG,
+            0,
+            0,
+            _i16(channel),
+            _i16(config.t_sensor),
+            _i16(config.i_gain_idx),
+            _i16(config.i_lpf),
+            _i16(config.i_sens_pwr),
+            0,
+            _u16(config.input_dc),
+            _u16(config.input_ac),
+            _u16(config.use_balance),
         )
+        sent = self.sock.sendto(payload, self.addr)
+        assert sent == len(payload), "CHANNEL CONFIG MESSAGE PROBLEM"
 
     def acq_setup_multi(self, freq_idx: float, n_sig: int) -> None:
         icm = [0] * 8
@@ -453,7 +437,7 @@ class ChannelConfig:
     calibrated: bool = False
 
 
-def read_text_file(path: str) -> Optional[str]:
+def read_text_file(path: str) -> str | None:
     try:
         with open(path, "rb") as f:
             data = f.read()
