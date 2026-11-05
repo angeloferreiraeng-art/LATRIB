@@ -7,8 +7,14 @@ config = {"MOTOR_PORT": "shit", "MOTOR_ID": 1, "MOTOR_BAUD_RATE": 110000}
 
 orc = Orchestrator()
 orc.launch()
-# orc.begin()
 
+#orc.motor_vel()
+orc.start()
+
+time.sleep(10)
+orc.update()
+orc.stop()
+exit()
 with open("data.csv", "w") as file:
     while True:
         orc.update()

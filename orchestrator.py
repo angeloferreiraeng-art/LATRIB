@@ -7,12 +7,14 @@ from queue import Queue, Empty, Full
 
 from motor import Motor, MotorConfig
 from sensors import Sensors, SensorsConfig
+from enum import Enum
+class State(Enum):
+    INIT = 0
+    ERROR = -1
+    READY = 1
+    RUNNING = 2
+    STOP = 3
 
-STATE_INIT = "INIT"
-STATE_ERROR = "ERROR"
-STATE_READY = "READY"
-STATE_RUNNING = "RUNNING"
-STATE_STOP = "STOP"
 
 
 def _pop_from(queue: Queue) -> str | None:
@@ -42,7 +44,7 @@ def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue
     print("freq:", angular_speed)
     MAX_VAL = 50
 
-    f_sine = lambda i: 100 * MAX_VAL * np.sin(angular_speed * i)
+    f_sine = lambda i:  MAX_VAL * np.sin(angular_speed * i)
     current_cmd = None
 
     while True:
@@ -64,14 +66,20 @@ def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue
         except Exception as e:
             print(f"Motor operation failure: {e}")
             fail_event.set()
+            motor.stop()
             return
 
 
 # top level scope for the dlg400 sensor thread
 def _run_sensors(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue):
-    config = SensorsConfig()
-    sensors = Sensors(config)
-    sensors.set_nonblocking()
+    try:
+        config = SensorsConfig()
+        sensors = Sensors(config)
+        sensors.set_nonblocking()
+    except Exception as e:
+        print(f"Sensors initialization failure: {e}")
+        fail_event.set()
+        return
 
     # acquisition loop
     reading = False
@@ -106,7 +114,7 @@ def global_config():
 class Orchestrator:
     """Top class state object"""
 
-    state: str = STATE_INIT
+    state: int = State.INIT
     motor_thread: threading.Thread | None = None
     sensor_thread: threading.Thread | None = None
 
@@ -119,7 +127,7 @@ class Orchestrator:
     sensors_out: Queue = Queue()
 
     def __init__(self) -> None:
-        self.state = STATE_INIT
+        self.state = State.INIT
         self.motor_thread = None
         self.sensor_thread = None
 
@@ -137,37 +145,38 @@ class Orchestrator:
         """Receives all system signals for the grafcet of the system and
         evaluate the proper transition for the state machine
         """
-        match self.state:
-            case STATE_ERROR:
-                pass
-            case STATE_INIT:
+        state=self.state
+        match state:
+            case State.ERROR:
+                return
+            case State.INIT:
                 if init_ok:
-                    self.state = STATE_READY
+                    self.state = State.READY
                 else:
-                    self.state = STATE_ERROR
-            case STATE_READY:
+                    self.state = State.ERROR
+            case State.READY:
                 if not stop_on and start_on:
                     self.motor_cmd.put("START")
                     self.sensors_cmd.put("START")
-                    self.state = STATE_RUNNING
+                    self.state = State.RUNNING
                     return
-            case STATE_RUNNING:
+            case State.RUNNING:
                 if stop_on and not start_on:
                     self.motor_cmd.put("STOP")
                     self.sensors_cmd.put("STOP")
-                    self.state = STATE_STOP
+                    self.state = State.STOP
 
     def check_state(self) -> str:
         return self.state
 
     def launch(self):
         try:
-            # self.motor_thread = threading.Thread(
-            #    target=_run_motor,
-            #    args=(self.motor_fail, self.motor_cmd, self.motor_out),
-            #    daemon=True,
-            # )
-            # self.motor_thread.start()
+            self.motor_thread = threading.Thread(
+               target=_run_motor,
+                args=(self.motor_fail, self.motor_cmd, self.motor_out),
+               daemon=True,
+            )
+            self.motor_thread.start()
 
             self.sensor_thread = threading.Thread(
                 target=_run_sensors,
@@ -176,20 +185,24 @@ class Orchestrator:
             )
             self.sensor_thread.start()
 
-            self.state = STATE_READY
+            self.state = State.READY
         except Exception as e:
             print("::::Orchestrator launch failed!:::::")
-            self.state = STATE_ERROR
+            self.state = State.ERROR
 
-    def pause(self):
+    def stop(self):
         self.motor_cmd.put("STOP")
         self.sensors_cmd.put("STOP")
-        self.state = STATE_STOP
+        self.state = State.STOP
 
     def start(self):
         self.motor_cmd.put("START")
         self.sensors_cmd.put("START")
-        self.state = STATE_RUNNING
+        self.state = State.RUNNING
+
+    def motor_vel(self):
+        self.motor_cmd.put("VEL_CTRL")
+        #self.sensors_cmd.put("START")
 
     def write_data(self, file: TextIOWrapper):
         """Outputs buffered data to the given file. May fail."""
@@ -204,4 +217,4 @@ class Orchestrator:
     def update(self):
         if self.motor_fail.is_set() or self.sensors_fail.is_set():
             print("FOUND ERROR DURING UPDATE")
-            self.state = STATE_ERROR
+            self.state = State.ERROR

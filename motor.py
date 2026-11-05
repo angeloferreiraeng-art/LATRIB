@@ -27,6 +27,8 @@ ADDR_SPEED_SRC_B = 0x0600 + 1  # aux speed source B
 ADDR_SPEED_SRC_SEL = 0x0600 + 2  # speed command source
 ADDR_VDI_ENABLE = 0x0C00 + 9  # comm VDI enable
 ADDR_VDI_LEVEL = 0x3100 + 0  # VDI virtual
+ADDR_MULTI_SPEED_ACCEL_1=0x1200+3
+ADDR_MULTI_SPEED_DECCEL_1=0x1200+4
 ADDR_MULTI_SPEED_HEAD = 0x1200 + 0
 ADDR_MULTI_SPEED_FIRST = 0x1200 + 20
 ADDR_DI_FLAGS = 0x0300
@@ -61,13 +63,13 @@ REG_P0C_26 = 0x0C26  # word order
 class MotorConfig:
     port: str = "COM5"
     slave_id: int = 1
-    baud_rate: int = 19200
+    baud_rate: int = 115200#19200
     parity: str = "E"
     stop_bits: int = 1
     byte_size: int = 8
 
     @classmethod
-    def from_config(cls, src: Mapping[str, Any]) -> MotorConfig:
+    def from_config(cls, src):
         return cls(
             port=src["MOTOR_PORT"],
             slave_id=int(src["MOTOR_ID"]),
@@ -128,6 +130,14 @@ class Motor:
             print(r)
             raise RuntimeError("MODBUS WRITE FAILED")
 
+    def _read_u32(self, addr: int):
+        r = self.client.read_holding_registers(addr,count=2)
+        if r.isError():
+            print(r)
+            raise RuntimeError("MODBUS READ FAILED")
+        b_low,b_high=r.registers[0],r.registers[1]
+        return b_high << 16 | b_low
+
     def _read(self, addr: int):
         r = self.client.read_holding_registers(addr)
         if r.isError():
@@ -181,58 +191,63 @@ class Motor:
         self._write(ADDR_ANALOG_SPEED_10V, 500)
         self.mode = "VEL_ANALOG"
 
-    def pos_ctrl(self, f, times):
-        assert len(times) <= 16, "TIMES ARRAY CANT BE BIGGER THAN 16 ELEMENTS"
+    def pos_ctrl(self,f,times):
+        assert(len(times)<=16),"TIMES ARRAY CANT BE BIGGER THAN 16 ELEMENTS"
         print(":::::SETTING POSITION SINE::::::")
-        PULSE_PER_ROT = 10000
-        # NOTE:  I dont know what any of these do, keep it just to be safe.
-        self._write(ADDR_VDI_LEVEL, 0)
-        self._write(ADDR_VDI_ENABLE, 1)
-        self._write(ADDR_DI1_FN, 0)
+        PULSE_PER_ROT=10000
+    #NOTE:  I dont know what any of these do, keep it just to be safe.
+        self._write(ADDR_VDI_LEVEL, 0 )  
+        self._write(ADDR_VDI_ENABLE, 1 ) 
+        self._write(ADDR_DI1_FN, 0 )
 
-        self._write(ADDR_VDI_FN1, 1)
-        self._write(ADDR_VDI_FN2, 28)
+        self._write(ADDR_VDI_FN1, 1 )
+        self._write(ADDR_VDI_FN2, 28 )
 
-        # Set mode to position
-        self.client.write_register(ADDR_CTRL_MODE, 1)
+    
+    # Set mode to position
+        self._write(ADDR_CTRL_MODE, 1 )
+       
+        self._write(ADDR_POS_SRC_SEL,2) #muti segment
+        self._write(ADDR_PULSE_PER_ROT, PULSE_PER_ROT )
+        self._write(ADDR_POS_LOW_PASS, 10)
+        self._write(ADDR_POS_TIME_CTE, 10)
 
-        self.client.write_register(ADDR_POS_SRC_SEL, 2)  # muti segment
-        self.client.write_register(ADDR_PULSE_PER_ROT, 500)  # PULSE_PER_ROT )
-        self.client.write_register(ADDR_POS_LOW_PASS, 10)
-        self.client.write_register(ADDR_POS_TIME_CTE, 10)
 
-        n_segments = len(times)
+        n_segments=len(times)
 
-        TIME_UNIT = 0
-        data = [1, n_segments, 0, TIME_UNIT, 0, 1]  # header
-        self.client.write_registers(ADDR_MULTI_POS_HEAD, data)
+        TIME_UNIT=0
+        data=[1,n_segments,0,TIME_UNIT,0,1]  #header  
+        self.client.write_registers(ADDR_MULTI_POS_HEAD,data)
 
-        data = []
-        t = 0
-        x0 = f(times[-1])
-        addr = ADDR_MULTI_POS_FIRST
+        data=[]
+        t=0
+        x0=f(times[-1])
+        addr=ADDR_MULTI_POS_FIRST
         for dt in times:
-            t = t + dt
-            raw = f(t)  # voltas
-            x1 = int(np.floor(PULSE_PER_ROT * raw))
-            self._write_u32(addr, x1)
-            addr = addr + 2
-            speed = int((x1 - x0) / dt) & 0xFFFF
-            print(x0, x1, speed)
-            x0 = x1
-            self._write(addr, speed)
-            addr = addr + 1
-            accel = 0  # int(500*dt)#TODO:DO CALC ON THIS
-            self._write(addr, accel)
-            addr = addr + 1
-            wait = 0
-            self._write(addr, wait)
-            addr = addr + 1
+            t=t+dt
+            raw=f(t)#voltas
+            print(f"RAW ROTATIONS{raw}")
+            x1=int(np.floor(PULSE_PER_ROT*raw))
+            #print(f"WRITING:{x1},ADDR:{addr:X}")
+            self._write_u32(addr,x1)
+            wrote=self._read_u32(addr)
+            #print(f"READING:{wrote}")
+            addr=addr+2
+            speed=int((x1-x0)/dt)&0xFFFF
+            x0=x1
+            self._write(addr,speed)
+            addr=addr+1
+            accel=int(500*dt)#TODO:DO CALC ON THIS
+            self._write(addr,accel)
+            addr=addr+1
+            wait=0
+            self._write(addr,wait)
+            addr=addr+1
 
-        read = self._read_many(ADDR_MULTI_POS_FIRST, 5 * len(times))
-        # print(read)
-        # for a,b in zip(data,read):
-        # assert(a==b),f"VALUE WRITE ERROR: TRIED TO WRITE {a}, READ BACK IS {b}"
+        read=self._read_many(ADDR_MULTI_POS_FIRST,5*len(times))
+        #print(read)
+        #for a,b in zip(data,read):
+            #assert(a==b),f"VALUE WRITE ERROR: TRIED TO WRITE {a}, READ BACK IS {b}"
         self.mode = "POS_SEC"
 
     # NOTE: THIS THROWS ERROR
@@ -255,6 +270,9 @@ class Motor:
 
         data = [1, n_segments, 0]  # header
         self.client.write_registers(ADDR_MULTI_SPEED_HEAD, data)
+
+        self._write(ADDR_MULTI_SPEED_ACCEL_1,1)
+        self._write(ADDR_MULTI_SPEED_DECCEL_1,1)
 
         data = []
         t = 0
