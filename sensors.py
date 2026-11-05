@@ -10,8 +10,9 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-import typing
-from typing import Any, Callable, List, Optional, Protocol, Sequence, Tuple
+
+from __future__ import annotations
+from typing import Any
 
 # --------------------------------------------------------------------------
 # Defaults
@@ -69,8 +70,6 @@ _DATA_MAX_SMP = 720
 PKT_DATA_HEADER_SIZE = _DATA_HDR.size  # == offsetof(PktData, smp) == 32
 PKT_DATA_SIZE = PKT_DATA_HEADER_SIZE + 2 * _DATA_MAX_SMP
 
-Sample = Tuple[int, ...]  # DEFAULT_CHANNELS int16 values
-
 
 @dataclass
 class SensorsConfig:
@@ -80,7 +79,7 @@ class SensorsConfig:
     bind_port: int = 41402
 
     @classmethod
-    def from_config(cls, src) :
+    def from_config(cls, src: dict[str, Any]) -> SensorsConfig:
         return cls(
             ip_address=src["SENSORS_IP"],
             port=src["SENSORS_PORT"],
@@ -146,7 +145,6 @@ class Sensors:
     def start(self) -> None:
         payload = _HDR.pack(OP_ACQSTART, 0)
         sent = self.sock.sendto(payload, self.addr)
-        print("sensor sending ok")
         assert sent == len(payload), "SENSOR START MESSAGE PROBLEM"
 
     def configure_channel(self, channel: int, config) -> None:
@@ -176,12 +174,12 @@ class Sensors:
         )
 
     def read(self) -> bytes:  # NOTE: rewrite this to output a decent format
-        data=bytes()
+        data = bytes()
         try:
             data, _ = self.sock.recvfrom(PKT_DATA_SIZE)
         except OSError:
             pass
-        print(f"sensor read ok: data{data}")
+        print(f"sensor read ok: data{data}")  # BUG: THIS IS HACKY AND UGLY
         return data
 
     def drain_packets_to_ring(self, ring, n_sig: int) -> bool:
@@ -291,7 +289,6 @@ class DlgLink:
         self.send_cmd(
             _ACQ_SETUP.pack(OP_ACQSETUP, 0, freq_idx, 0, 0, 0, 0, 1, _i16(n_sig), *icm)
         )
-
 
     def wait_first_samples(
         self, ring, n_sig: int, min_samples: int, timeout_ms: int

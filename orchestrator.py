@@ -8,13 +8,14 @@ from queue import Queue, Empty, Full
 from motor import Motor, MotorConfig
 from sensors import Sensors, SensorsConfig
 from enum import Enum
+
+
 class State(Enum):
     INIT = 0
     ERROR = -1
     READY = 1
     RUNNING = 2
     STOP = 3
-
 
 
 def _pop_from(queue: Queue) -> str | None:
@@ -44,7 +45,7 @@ def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue
     print("freq:", angular_speed)
     MAX_VAL = 50
 
-    f_sine = lambda i:  MAX_VAL * np.sin(angular_speed * i)
+    f_sine = lambda i: MAX_VAL * np.sin(angular_speed * i)
     current_cmd = None
 
     while True:
@@ -145,7 +146,7 @@ class Orchestrator:
         """Receives all system signals for the grafcet of the system and
         evaluate the proper transition for the state machine
         """
-        state=self.state
+        state = self.state
         match state:
             case State.ERROR:
                 return
@@ -172,9 +173,9 @@ class Orchestrator:
     def launch(self):
         try:
             self.motor_thread = threading.Thread(
-               target=_run_motor,
+                target=_run_motor,
                 args=(self.motor_fail, self.motor_cmd, self.motor_out),
-               daemon=True,
+                daemon=True,
             )
             self.motor_thread.start()
 
@@ -184,25 +185,37 @@ class Orchestrator:
                 daemon=True,
             )
             self.sensor_thread.start()
-
-            self.state = State.READY
+            self.eval_state(init_ok=True)
+            # self.state = State.READY
         except Exception as e:
             print("::::Orchestrator launch failed!:::::")
-            self.state = State.ERROR
+            self.eval_state(init_ok=False)
+            # self.state = State.ERROR
 
     def stop(self):
         self.motor_cmd.put("STOP")
         self.sensors_cmd.put("STOP")
-        self.state = State.STOP
+        self.eval_state(stop_on=True)
+        # self.state = State.STOP
 
     def start(self):
         self.motor_cmd.put("START")
         self.sensors_cmd.put("START")
-        self.state = State.RUNNING
+        self.eval_state(start_on=True)
+        # self.state = State.RUNNING
 
     def motor_vel(self):
         self.motor_cmd.put("VEL_CTRL")
-        #self.sensors_cmd.put("START")
+        # self.sensors_cmd.put("START")
+
+    def print_data(self):
+        """Outputs buffered data to the given file. May fail."""
+        while not self.sensors_out.empty():
+            data = self.sensors_out.get()
+            if data is None:
+                break
+            else:
+                print(data)
 
     def write_data(self, file: TextIOWrapper):
         """Outputs buffered data to the given file. May fail."""
