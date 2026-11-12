@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from io import FileIO, TextIOWrapper
 import threading
 import time
@@ -8,6 +9,7 @@ from queue import Queue, Empty, Full
 from motor import Motor, MotorConfig
 from sensors import Sensors, SensorsConfig
 from enum import Enum
+import math
 
 
 class State(Enum):
@@ -16,6 +18,28 @@ class State(Enum):
     READY = 1
     RUNNING = 2
     STOP = 3
+
+
+@dataclass
+class Command:
+    code: str
+    value: int
+
+
+def peak_integral(a, b):
+    """Calcs the % of the area of the given peak function compared to a sine wave"""
+    p1 = a * (np.cos(0) - np.cos(np.pi))
+    p2 = (1 - a) * np.sqrt(np.pi) * math.gamma((b + 1) / 2) / math.gamma((b + 2) / 2)
+    return (p1 + p2) / 2
+
+
+def peak_generator(omega, a, b):
+    """Generates a function that outputs the speed curve with the given factors"""
+    f = lambda x: (
+        np.sign(np.sin(omega * x))
+        * (a * np.abs(np.sin(omega * x)) + (1 - a) * (np.abs(np.sin(omega * x)) ** b))
+    )
+    return f
 
 
 def _pop_from(queue: Queue) -> str | None:
@@ -41,26 +65,29 @@ def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue
     SEG_TIME = 1
     times = np.ones(NUM_SEGMENTS) * SEG_TIME
     period = np.sum(times)
-    angular_speed = 2 * np.pi / (period)
-    print("freq:", angular_speed)
-    MAX_VAL = 50
+    STROKE_SIZE = 10
+    omega = 2 * np.pi / (period)
+    a = 0
+    b = 1
 
-    f_sine = lambda i: MAX_VAL * np.sin(angular_speed * i)
     current_cmd = None
 
     while True:
         try:
             new_cmd = _pop_from(cmd_buffer)
             match new_cmd:
-                case "VEL_CTRL":
-                    motor.vel_ctrl(f_sine, times)
-                case "POS_CTRL":
-                    motor.vel_ctrl(f_sine, times)
-                case "ANALOG_MODE":
+                case Command(code="VEL_CTRL"):
+                    modifier = peak_integral(a, b)
+                    max_val = 0.5 * STROKE_SIZE / modifier
+                    f = peak_generator(omega, a, b)
+                    motor.vel_ctrl(f, times)
+                case Command(code="POS_CTRL"):
+                    raise RuntimeError("NOT IMPLEMENTED!")
+                case Command(code="ANALOG_MODE"):
                     motor.analog_mode()
-                case "START":
+                case Command(code="START"):
                     motor.start()
-                case "STOP":
+                case Command(code="STOP"):
                     motor.stop()
                 case None:
                     pass
@@ -89,17 +116,20 @@ def _run_sensors(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Que
         try:
             new_cmd = _pop_from(cmd_buffer)
             match new_cmd:
-                case "START":
+                case Command(code="START"):
                     sensors.start()
                     reading = True
-                case "STOP":
+                case Command(code="STOP"):
                     sensors.stop()
                     reading = False
+                case Command(code="CALIBRATE"):
+                    channel=new_cmd.value
+                    sensors.calibrate_filter(channel)
                 case None:
                     pass
             if reading:
-                bytes = sensors.read()
-                out_buffer.put(bytes)
+                frame = sensors.read()
+                out_buffer.put(frame)
 
         except Exception as e:
             print(f"Sensors failed: {e}")
@@ -115,7 +145,7 @@ def global_config():
 class Orchestrator:
     """Top class state object"""
 
-    state: int = State.INIT
+    state: State = State.INIT
     motor_thread: threading.Thread | None = None
     sensor_thread: threading.Thread | None = None
 

@@ -1,11 +1,9 @@
-from pymodbus.client import ModbusSerialClient
-from pymodbus.exceptions import ModbusException
-
-from dataclasses import dataclass
 from __future__ import annotations
+from dataclasses import dataclass
 from typing import Any
 
-
+from pymodbus.client import ModbusSerialClient
+from pymodbus.exceptions import ModbusException
 import numpy as np
 import math
 
@@ -53,6 +51,8 @@ ADDR_VDI_FN2 = 0x1700 + 2
 
 ADDR_POS_LOW_PASS = 0x0500 + 4
 ADDR_POS_TIME_CTE = 0x0500 + 6
+
+ADDR_ENCODER_ANGLE=0x0B00+10
 
 REG_P0B_07 = 0x0B07  # P0B-07 (abs pos, 32-bit) - historical naming
 REG_P0B_09 = 0x0B09  # P0B-09 (pos per revolution, 0..65535)
@@ -165,6 +165,10 @@ class Motor:
         else:
             return r.registers
 
+    def get_pos(self):
+        return self._read(ADDR_ENCODER_ANGLE)
+
+    
     def start(self):
         print(f":::::STARTING MOTOR WITH MODE {self.mode}::::::")
         if self.mode == "NONE":
@@ -258,9 +262,28 @@ class Motor:
         # assert(a==b),f"VALUE WRITE ERROR: TRIED TO WRITE {a}, READ BACK IS {b}"
         self.mode = "POS_SEC"
 
-    # NOTE: THIS THROWS ERROR
+
     def vel_ctrl(self, f, times):
-        assert len(times) <= 16, "TIMES ARRAY CANT BE BIGGER THAN 16 ELEMENTS"
+        assert len(times) <= 8, "TIMES ARRAY CANT BE BIGGER THAN 8 ELEMENTS"
+        v_plus = []
+        v_minus=[]
+        t = 0
+        for dt in times:
+            t = t + dt
+            speed = int(np.floor(f(t)))
+            print(speed)
+            assert speed>=0 , "HALFSTROKE SPEED NEEDS TO BE POSITIVE."
+            v_plus.append(speed)
+            v_minus.append(-speed)
+        speeds=np.append(v_plus,np.flip(v_minus))
+        full_times=np.append(times,times)
+        print(speeds)
+        assert (len(speeds)==len(full_times)), "VEL CONTROL THING BROKE"
+        self.vel_ctrl_unchecked(full_times,speeds)
+        
+
+    # NOTE: THIS THROWS ERROR
+    def vel_ctrl_unchecked(self,times,speeds):
         print(":::::SETTING SPEED SINE::::::")
         self._write(ADDR_VDI_LEVEL, 0)
         self._write(ADDR_VDI_ENABLE, 1)
@@ -284,12 +307,11 @@ class Motor:
 
         data = []
         t = 0
-        for dt in times:
+        for s,dt, in zip(speeds,times):
             t = t + dt
-            speed = int(np.floor(f(t)))
+            speed = int(np.floor(s))
             if speed < 0:
                 speed = speed & 0xFFFF
-            print(speed)
             data.append(speed)
             data.append(int(dt))
             data.append(0)
@@ -299,7 +321,6 @@ class Motor:
             self._write(ADDR_MULTI_SPEED_FIRST + i, d)
             v = self._read(ADDR_MULTI_SPEED_FIRST + i)
             assert d == v, f"VALUE WRITE ERROR: TRIED TO WRITE {d}, READ BACK IS {v}"
-        # self.client.write_registers(ADDR_MULTI_SPEED_FIRST,data)
         self.mode = "VEL_SEC"
 
 
