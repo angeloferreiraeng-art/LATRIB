@@ -430,13 +430,16 @@ class Sensors:
                 _u16(cfg.input_ac),
                 _u16(cfg.use_balance),
             )
-            self.sock.sendto(payload, self.address)
+            sent = self.sock.sendto(payload, self.address)
+            assert sent == len(payload), (
+                f"Failed to configure DataLogger CH-{i}, Config was truncated."
+            )
             filter = CascadedBiQuadFilter(self.rate_hz, cfg.cutoff_freq, cfg.resonance)
             filter.set_unfiltered()
             self.filters.append(filter)
             converter = Converter(cfg.offset, cfg.gain)
             self.converters.append(converter)
-        self.real_rate_hz = self.acq_setup(self.rate_hz, self.samples_per_pack)
+        self.rate_hz = self.acq_setup(self.rate_hz, self.samples_per_pack)
 
     def __exit__(self) -> None:
         self.stop()
@@ -447,6 +450,58 @@ class Sensors:
         self.sock.close()
 
     def acq_setup(self, rate_hz: float, n_bursts: int = 1) -> float:
+        """Configura a aquisição. Retorna a frequência real informada pelo aparelho."""
+        icm = [0] * N_MAX_CHAN
+        for i in range(N_CHANNELS):
+            icm[i] = _i16(i)
+        payload = _ACQ_SETUP.pack(
+            OP_ACQSETUP,
+            0,
+            float(rate_hz),
+            0,
+            0,
+            0,
+            0,
+            _i16(n_bursts),
+            _i16(N_CHANNELS),
+            *icm,
+        )
+        sent = self.sock.sendto(payload, self.address)
+        assert sent == len(payload), (
+            "Failed to send full setup payload to datalogger connection."
+        )
+        # Reads until the ACQSETUP_R shows up, skipping stray replies
+        # (e.g. SETCHCFG_R from the channel configs) and leftover ACQDATA.
+        deadline = time.time() + self.timeout
+        while True:
+            if time.time() > deadline:
+                raise TimeoutError("sem resposta ao AcqSetup")
+            try:
+                resp, _ = self.sock.recvfrom(RECV_BUFFER)
+            except socket.timeout:
+                raise TimeoutError("sem resposta ao AcqSetup") from None
+            except ConnectionResetError:  # Windows: ICMP "port unreachable"
+                continue
+            if len(resp) < _HDR.size:
+                continue
+            code = struct.unpack_from("<H", resp)[0]
+            if code == OP_SETCHCFG_R and len(resp) >= _RESP.size:
+                err = _RESP.unpack_from(resp)[2]
+                if err != 0:
+                    raise RuntimeError(f"SetChConfig falhou (erro {err})")
+                continue
+            if code != OP_ACQSETUP_R:
+                continue
+            if len(resp) < _ACQ_SETUP_R.size:
+                raise RuntimeError("resposta AcqSetup truncada")
+            _, _, err, real = _ACQ_SETUP_R.unpack_from(resp)
+            if err != 0:
+                raise RuntimeError(f"AcqSetup falhou (erro {err})")
+            if abs(real - rate_hz) > 1e-6 * max(rate_hz, 1.0):
+                print(f"frequência pedida {rate_hz:.3f} Hz, real {real:.3f} Hz")
+            return real
+
+    def acq_setup_old(self, rate_hz: float, n_bursts: int = 1) -> float:
         """Configura a aquisição. Retorna a frequência real informada pelo aparelho."""
         icm = [0] * N_MAX_CHAN
         for i in range(N_CHANNELS):
