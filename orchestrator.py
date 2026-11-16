@@ -17,13 +17,14 @@ class State(Enum):
     ERROR = -1
     READY = 1
     RUNNING = 2
-    STOP = 3
+    CALIBRATING = 3
+    STOP = 4
 
 
 @dataclass
 class Command:
     code: str
-    value: int
+    value: int | float
 
 
 def peak_integral(a, b):
@@ -42,7 +43,7 @@ def peak_generator(omega, a, b):
     return f
 
 
-def _pop_from(queue: Queue) -> str | None:
+def _pop_from(queue: Queue) -> Command | None:
     """Helper function to return an optional result from the queue"""
     if queue.empty():
         return None
@@ -103,7 +104,6 @@ def _run_sensors(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Que
     try:
         config = SensorsConfig()
         sensors = Sensors(config)
-        sensors.set_nonblocking()
     except Exception as e:
         print(f"Sensors initialization failure: {e}")
         fail_event.set()
@@ -111,7 +111,10 @@ def _run_sensors(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Que
 
     # acquisition loop
     reading = False
-    # sensors.acq_start()
+    calibrating = False
+    target_list = []
+    read_list = []
+    channel_idx: int = 0
     while True:
         try:
             new_cmd = _pop_from(cmd_buffer)
@@ -123,8 +126,30 @@ def _run_sensors(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Que
                     sensors.stop()
                     reading = False
                 case Command(code="CALIBRATE"):
-                    channel=new_cmd.value
-                    sensors.calibrate_filter(channel)
+                    channel_idx = int(new_cmd.value)
+                    sensors.calibrate_filter(channel_idx)
+                case Command(code="REF_POINT"):
+                    read = sensors.read_channel(channel_idx)
+                    target = new_cmd.value
+                    read_list.append(read)
+                    target_list.append(target)
+                case Command(code="CAL_COMMIT"):  # commits to calibration set
+                    x = np.array(read_list, dtype=float)
+                    y = np.array(target_list, dtype=float)
+                    assert len(x) == len(y), "listx and listy must have the same length"
+                    assert len(x) >= 2, "At least 2 data points are required"
+                    # Least-squares solution via closed-form formula
+                    n = len(x)
+                    sum_x = np.sum(x)
+                    sum_y = np.sum(y)
+                    sum_xy = np.sum(x * y)
+                    sum_x2 = np.sum(x * x)
+
+                    denominator = n * sum_x2 - sum_x**2
+                    assert denominator != 0, "Cannot fit: all x values are identical"
+                    a = (n * sum_xy - sum_x * sum_y) / denominator
+                    b = (sum_y * sum_x2 - sum_x * sum_xy) / denominator
+                    sensors.set_converter(channel_idx, a, b)
                 case None:
                     pass
             if reading:
@@ -221,6 +246,18 @@ class Orchestrator:
             print("::::Orchestrator launch failed!:::::")
             self.eval_state(init_ok=False)
             # self.state = State.ERROR
+
+    def start_calibration(self, channel: int):
+        cmd = Command(code="CALIBRATE", value=channel)
+        self.sensors_cmd.put(cmd)
+        self.state = State.CALIBRATING
+
+    def ref_point(self, value: float):
+        if self.state == State.CALIBRATING:
+            cmd = Command(code="REF_POINT", value=value)
+            self.sensors_cmd.put(cmd)
+        else:
+            print("SYSTEM NOT IN CALIBRATION MODE, IGNORING.")
 
     def stop(self):
         self.motor_cmd.put("STOP")
