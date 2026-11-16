@@ -81,8 +81,8 @@ def parse_pack(
 class ChannelConfig:
     gain: float = 1.0
     offset: float = 0.0
-    cutoff_freq: float = 1000.0
-    resonance: float = 0.0
+    cutoff_freq: float = 0.1
+    resonance: float = 0.7071
     t_sensor: int = (
         4  # 0 tensão, 1 corrente, 2 ponte completa, 3 1/4, 4 1/2 ponte, 5 ICP...
     )
@@ -135,7 +135,11 @@ class Converter:
         self.offset = offset
         self.gain = gain
 
-    def process(self, block):
+    def process(self, value):
+        return value * self.gain + self.offset
+
+
+    def process_block(self, block):
         for i in len(block):
             raw = block[i]
             block[i] = raw * self.gain + self.offset
@@ -182,6 +186,18 @@ class BiQuadFilter:
             a2 = 1 - alpha
             self._set_coefficients(a0, a1, a2, b0, b1, b2)
 
+    def set_unfiltered(self):
+        self.a0 = 1.0
+        self.a1 = 0.0
+        self.a2 = 0.0
+        self.a3 = 0.0
+        self.a4 = 0.0
+
+        self.x1 = 0.0
+        self.x2 = 0.0
+        self.y1 = 0.0
+        self.y2 = 0.0
+
     def process(self, inp):
         a0, a1, a2, a3, a4 = self.a0, self.a1, self.a2, self.a3, self.a4
         x1, x2, y1, y2 = self.x1, self.x2, self.y1, self.y2
@@ -222,6 +238,110 @@ class BiQuadFilter:
         self.a4 = a2 / a0
 
 
+
+
+
+class CascadedBiQuadFilter:
+    """
+    Drop-in replacement for BiQuadFilter using cascaded 2nd-order sections
+    (Butterworth pole placement) for steeper noise rejection (-24 dB/oct at order=4,
+    -36 dB/oct at order=6) while preserving a maximally flat passband at resonance=1.0.
+    """
+    _resonance_peak_offset = 1.0 - (1.0 / np.sqrt(2.0))
+
+    def __init__(self, sample_rate, cutoff_frequency, resonance=1.0, order=4):
+        if order % 2 != 0 or order < 2:
+            raise ValueError("Filter order must be an even integer >= 2 (e.g., 4 or 6).")
+
+        self.sample_rate = sample_rate
+        self.cutoff = cutoff_frequency
+        self.resonance = resonance
+        self.order = order
+        self.num_stages = order // 2
+
+        # Each stage stores [a0, a1, a2, a3, a4] (normalized b0, b1, b2, a1, a2)
+        self.stages = []
+        self.clear_buffer()
+
+        if cutoff_frequency >= 0.499 * sample_rate:
+            # True unity-gain bypass instead of muting when cutoff >= Nyquist guard
+            for _ in range(self.num_stages):
+                self.stages.append((1.0, 0.0, 0.0, 0.0, 0.0))
+            return
+
+        # Prevent negative/zero Q if resonance < 1.0
+        safe_res = max(resonance, 0.85)
+        user_q = safe_res - self._resonance_peak_offset / (1.0 + 6.0 * (safe_res - 1.0))
+        # Scale factor relative to a flat Butterworth Q (1/sqrt(2))
+        q_scale = user_q * np.sqrt(2.0)
+
+        w = 2.0 * np.pi * cutoff_frequency / sample_rate
+        cosw = np.cos(w)
+        sinw = np.sin(w)
+
+        for k in range(self.num_stages):
+            # Exact Butterworth pole Q for stage k of an Nth-order filter
+            pole_angle = np.pi * (2 * k + 1) / (2 * order)
+            stage_q = (1.0 / (2.0 * np.sin(pole_angle))) * q_scale
+
+            alpha = sinw / (2.0 * stage_q)
+
+            b0 = (1.0 - cosw) / 2.0
+            b1 = 1.0 - cosw
+            b2 = (1.0 - cosw) / 2.0
+            a0 = 1.0 + alpha
+            a1 = -2.0 * cosw
+            a2 = 1.0 - alpha
+
+            # Normalize by a0 for fast Direct Form I processing
+            self.stages.append((b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0))
+
+    def clear_buffer(self):
+        # State buffer per biquad stage: [x1, x2, y1, y2]
+        self.state = [[0.0, 0.0, 0.0, 0.0] for _ in range(self.num_stages)]
+
+    def set_unfiltered(self):
+        """Sets all biquad stages to unity-gain bypass and clears state buffers."""
+        self.stages = [(1.0, 0.0, 0.0, 0.0, 0.0) for _ in range(self.num_stages)]
+        self.clear_buffer()
+
+    def process(self, inp):
+        val = inp
+        for i in range(self.num_stages):
+            a0, a1, a2, a3, a4 = self.stages[i]
+            x1, x2, y1, y2 = self.state[i]
+
+            out = a0 * val + a1 * x1 + a2 * x2 - a3 * y1 - a4 * y2
+
+            self.state[i] = [val, x1, out, y1]
+            val = out
+
+        return val
+
+    def process_block(self, block):
+        """Filters `block` in place (a list or NumPy array of floats)."""
+        n = len(block)
+        for i in range(self.num_stages):
+            a0, a1, a2, a3, a4 = self.stages[i]
+            x1, x2, y1, y2 = self.state[i]
+
+            for t in range(n):
+                inp = block[t]
+                out = a0 * inp + a1 * x1 + a2 * x2 - a3 * y1 - a4 * y2
+
+                x2 = x1
+                x1 = inp
+                y2 = y1
+                y1 = out
+
+                block[t] = out
+
+            self.state[i] = [x1, x2, y1, y2]
+
+        return block
+
+
+
 class Sensors:
     """Wrapper da conexão UDP com o DLG."""
 
@@ -245,8 +365,8 @@ class Sensors:
         if sent != len(payload):
             raise RuntimeError("envio UDP incompleto")
         # self.flush()
-        self.filters = []
-        self.converters = []
+        self.filters :list[CascadedBiQuadFilter]= []
+        self.converters :list[Converter]= []
         for i, cfg in enumerate(config.channel_configs):
             # cfg = config.channel_configs[i]
             payload = _SET_CH.pack(
@@ -264,7 +384,8 @@ class Sensors:
                 _u16(cfg.use_balance),
             )
             self.sock.sendto(payload, self.address)
-            filter = BiQuadFilter(self.rate_hz, cfg.cutoff_freq, cfg.resonance)
+            filter = CascadedBiQuadFilter(self.rate_hz, cfg.cutoff_freq, cfg.resonance)
+            filter.set_unfiltered()
             self.filters.append(filter)
             converter = Converter(cfg.offset, cfg.gain)
             self.converters.append(converter)
@@ -304,7 +425,7 @@ class Sensors:
             return real
         return float(rate_hz)
 
-    def calibrate_filter(self, idx: int, n_samples: int = 512):
+    def calibrate_filter_old(self, idx: int, n_samples: int = 512):
         """Automatically listens to the current signal on channel `channel_idx`,
         analyzes noise and main frequencies via FFT, and updates the BiQuadFilter
         cutoff frequency to filter out the noise and make the signal constant.
@@ -325,7 +446,7 @@ class Sensors:
             try:
                 raw_packet, _ = self.sock.recvfrom(RECV_BUFFER)
                 frames = parse_pack(raw_packet, N_CHANNELS)
-                if frames and len(frames) > idx:
+                if len(frames) > idx:
                     block = frames[idx]
                     if block:
                         raw_values.extend(block)
@@ -342,22 +463,111 @@ class Sensors:
         if len(freqs) > 1:
             peak_idx = np.argmax(fft_vals[1:]) + 1
             dominant_noise_freq = freqs[peak_idx]
+            print(dominant_noise_freq)
         else:
             dominant_noise_freq = self.rate_hz / 4.0
 
         # 3. Determine optimal cutoff frequency below the dominant noise/main frequency
         # If mains hum or noise is detected, set cutoff below it to flatten the signal
         if dominant_noise_freq > 2.0:
-            new_cutoff = dominant_noise_freq * 0.8
+            new_cutoff = dominant_noise_freq #* 0.8
         else:
             new_cutoff = self.rate_hz / 10.0  # Fallback safety margin
 
+        
         # Bound check according to BiQuadFilter constraints (< 0.499 * sample_rate)
         max_allowed_cutoff = 0.499 * self.rate_hz
         new_cutoff = max(0.5, min(new_cutoff, max_allowed_cutoff))
+        new_cutoff=25
         print(f"Channel {idx} cutoff set to {new_cutoff} Hz")
-        new_filter = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
+        #new_filter = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
+        new_filter = CascadedBiQuadFilter(self.rate_hz, new_cutoff, 1.0)
         self.filters[idx] = new_filter
+
+    def calibrate_filter(self, idx: int, n_samples: int = 512, min_freq: float = 2.0,max_cutoff:float=30.0):
+        """Automatically listens to the current signal on channel `idx`,
+        analyzes noise frequencies via FFT, and updates the filter cutoff
+        to the lowest-frequency significant noise peak.
+
+        Args:
+            idx: Index of the channel to calibrate.
+            n_samples: Number of raw samples to capture for noise analysis.
+            min_freq: Minimum frequency (Hz) to consider (ignores near-DC drift).
+
+        Returns:
+            The newly calculated and applied cutoff frequency in Hz.
+        """
+        raw_values = []
+        start_time = time.time()
+
+        # 1. Listen to the current signal stream to capture noise
+        while len(raw_values) < n_samples:
+            if time.time() - start_time > self.timeout * max(1, n_samples // 50):
+                break
+            try:
+                raw_packet, _ = self.sock.recvfrom(RECV_BUFFER)
+                frames = parse_pack(raw_packet, N_CHANNELS)
+                if len(frames) > idx:
+                    block = frames[idx]
+                    if block:
+                        raw_values.extend(block)
+            except socket.timeout:
+                continue
+
+        if len(raw_values) < 8:
+            # Fallback if packet capture timed out with insufficient data
+            new_cutoff = self.rate_hz / 10.0
+            self.filters[idx] = CascadedBiQuadFilter(self.rate_hz, new_cutoff, 1.0)
+            return new_cutoff
+
+        signal_data = np.array(raw_values[:n_samples], dtype=float)
+
+        # 2. Apply Hann window & compute FFT (prevents spectral leakage from hiding smaller peaks)
+        detrended = signal_data - np.mean(signal_data)
+        windowed = detrended * np.hanning(len(detrended))
+        fft_vals = np.abs(np.fft.rfft(windowed))
+        freqs = np.fft.rfftfreq(len(detrended), d=1.0 / self.rate_hz)
+
+        # 3. Find all local peaks above a dynamic threshold (median + 3 * MAD)
+        valid_mask = freqs >= min_freq
+        valid_freqs = freqs[valid_mask]
+        valid_mags = fft_vals[valid_mask]
+
+        lowest_noise_freq = None
+        if len(valid_mags) >= 3:
+            # Robust noise-floor estimation so small background ripples aren't treated as peaks
+            median_mag = np.median(valid_mags)
+            mad = np.median(np.abs(valid_mags - median_mag))
+            threshold = max(median_mag + 3.0 * mad, 0.15 * np.max(valid_mags))
+
+            # Local maxima: strictly greater than both immediate neighbors and above threshold
+            is_local_max = (
+                (valid_mags[1:-1] > valid_mags[:-2])
+                & (valid_mags[1:-1] >= valid_mags[2:])
+                & (valid_mags[1:-1] >= threshold)
+            )
+            peak_indices = np.where(is_local_max)[0] + 1  # +1 offsets the [1:-1] slice
+
+            if len(peak_indices) > 0:
+                # valid_freqs is sorted ascending, so peak_indices[0] is the lowest-frequency peak
+                lowest_noise_freq = valid_freqs[peak_indices[0]]
+            else:
+                # Fallback to single strongest bin if spectrum is broad without sharp peaks
+                lowest_noise_freq = valid_freqs[np.argmax(valid_mags)]
+
+        if lowest_noise_freq is not None:
+            # Place cutoff slightly below the lowest noise peak so it is attenuated,
+            # or set directly to lowest_noise_freq if you want -3 dB right at that peak
+            new_cutoff = lowest_noise_freq * 0.8
+        else:
+            new_cutoff = self.rate_hz / 10.0
+
+        # 4. Clamp to safe BiQuad range and apply filter
+        max_allowed_cutoff = 0.498 * self.rate_hz
+        new_cutoff = float(np.clip(new_cutoff, 0.5, max_allowed_cutoff))
+        new_cutoff=min(max_cutoff,new_cutoff)#NOTE:REWRITE THIS
+        print(f"Channel {idx}: lowest noise peak at {lowest_noise_freq} Hz -> cutoff set to {new_cutoff:.2f} Hz")
+        self.filters[idx] = CascadedBiQuadFilter(self.rate_hz, new_cutoff, 1.0)
 
     def start(self):
         # self.flush()
@@ -370,11 +580,12 @@ class Sensors:
 
     def set_filter(self, idx: int, cutoff: float):
         assert idx <= N_CHANNELS, "SETTING FILTER OUT OF BOUNDS"
-        new_filter = BiQuadFilter(self.rate_hz, cutoff, 1.0)
+        new_filter = BiQuadFilter(self.rate_hz, cutoff, 0.7071)
         self.filters[idx] = new_filter
 
     def set_converter(self, idx: int, gain: float, offset: float):
         assert idx <= N_CHANNELS, "SETTING CONVERTER OUT OF BOUNDS"
+        print(f"adjusting channel {idx} curve to {gain}*x+{offset}")
         new_converter = Converter(offset, gain)
         self.converters[idx] = new_converter
 
@@ -384,9 +595,25 @@ class Sensors:
             raw, _ = self.sock.recvfrom(RECV_BUFFER)
             blocks = parse_pack(raw, N_CHANNELS)
             out_data = np.zeros(N_CHANNELS)
-            for i in range(8):
+            for i in range(N_CHANNELS):
                 b = float(np.mean(blocks[i]))
-                # b = self.filters[i].process(b)
+                b = self.filters[i].process(b)
+                b=self.converters[i].process(b)
+                out_data[i] = b
+        except socket.timeout:
+            out_data = np.zeros(N_CHANNELS)
+        except ConnectionResetError:  # Windows: ICMP "port unreachable"
+            out_data = np.zeros(N_CHANNELS)
+        return out_data
+
+    def read_raw(self) -> np.ndarray:
+        """Reads the next data frame in a nice manner. Filters and adjust value to calibrated units."""
+        try:
+            raw, _ = self.sock.recvfrom(RECV_BUFFER)
+            blocks = parse_pack(raw, N_CHANNELS)
+            out_data = np.zeros(N_CHANNELS)
+            for i in range(N_CHANNELS):
+                b = float(np.mean(blocks[i]))
                 out_data[i] = b
         except socket.timeout:
             out_data = np.zeros(N_CHANNELS)
