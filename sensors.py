@@ -94,6 +94,44 @@ class ChannelConfig:
     use_balance: int = 0
     balance: int = 0
 
+    @classmethod
+    def strain_gauge(cls):
+        return cls(
+            gain=1.0,
+            offset=0.0,
+            cutoff_freq=0.1,
+            resonance=0.7071,
+            t_sensor=(
+                4  # 0 tensão, 1 corrente, 2 ponte completa, 3 1/4, 4 1/2 ponte, 5 ICP...
+            ),
+            i_lpf=0,
+            i_gain_idx=5,  # índice em GAIN_VALUES (5 -> 300)
+            i_sens_pwr=2,  # índice da tensão de excitação
+            input_dc=0,  # 1: 100K, 0: flutuante
+            input_ac=0,
+            use_balance=0,
+            balance=0,
+        )
+
+    @classmethod
+    def encoder(cls):
+        return cls(
+            gain=1.0,
+            offset=0.0,
+            cutoff_freq=0.1,
+            resonance=0.7071,
+            t_sensor=(
+                1  # 0 tensão, 1 corrente, 2 ponte completa, 3 1/4, 4 1/2 ponte, 5 ICP...
+            ),
+            i_lpf=0,
+            i_gain_idx=0,  # índice em GAIN_VALUES (5 -> 300)
+            i_sens_pwr=0,  # índice da tensão de excitação
+            input_dc=0,  # 1: 100K, 0: flutuante
+            input_ac=0,
+            use_balance=0,
+            balance=0,
+        )
+
 
 @dataclass
 class SensorsConfig:
@@ -105,18 +143,29 @@ class SensorsConfig:
     n_bursts_pack: int = 1  # amostras por canal em cada pacote
     timeout_s: float = 1.0  # timeout de leitura / confirmação
     channel_configs: list[ChannelConfig] = field(
-        default_factory=lambda: [ChannelConfig()] * N_CHANNELS
+        default_factory=lambda: [
+            ChannelConfig.strain_gauge(),
+            ChannelConfig(),
+            ChannelConfig.encoder(),
+            ChannelConfig(),
+            ChannelConfig(),
+            ChannelConfig(),
+            ChannelConfig(),
+        ]
     )
 
     @classmethod
     def from_config(cls, src: dict[str, Any]) -> SensorsConfig:
         ch_confs = []
         for i in range(N_CHANNELS):
+            ch_type = int(src[f"SENSORS_CHANNEL{i}_TYPE"])
             ch_cutoff = float(src[f"SENSORS_CHANNEL{i}_CUTOFF"])
             ch_resonance = float(src[f"SENSORS_CHANNEL{i}_RESONANCE"])
             ch_gain = float(src[f"SENSORS_CHANNEL{i}_GAIN"])
             ch_offset = float(src[f"SENSORS_CHANNEL{i}_OFFSET"])
-            conf = ChannelConfig(ch_gain, ch_offset, ch_cutoff, ch_resonance)
+            conf = ChannelConfig(
+                ch_gain, ch_offset, ch_cutoff, ch_resonance, t_sensor=ch_type
+            )
             ch_confs.append(conf)
         return cls(
             src["SENSORS_IP"],
@@ -137,7 +186,6 @@ class Converter:
 
     def process(self, value):
         return value * self.gain + self.offset
-
 
     def process_block(self, block):
         for i in len(block):
@@ -238,20 +286,20 @@ class BiQuadFilter:
         self.a4 = a2 / a0
 
 
-
-
-
 class CascadedBiQuadFilter:
     """
     Drop-in replacement for BiQuadFilter using cascaded 2nd-order sections
     (Butterworth pole placement) for steeper noise rejection (-24 dB/oct at order=4,
     -36 dB/oct at order=6) while preserving a maximally flat passband at resonance=1.0.
     """
+
     _resonance_peak_offset = 1.0 - (1.0 / np.sqrt(2.0))
 
     def __init__(self, sample_rate, cutoff_frequency, resonance=1.0, order=4):
         if order % 2 != 0 or order < 2:
-            raise ValueError("Filter order must be an even integer >= 2 (e.g., 4 or 6).")
+            raise ValueError(
+                "Filter order must be an even integer >= 2 (e.g., 4 or 6)."
+            )
 
         self.sample_rate = sample_rate
         self.cutoff = cutoff_frequency
@@ -341,7 +389,6 @@ class CascadedBiQuadFilter:
         return block
 
 
-
 class Sensors:
     """Wrapper da conexão UDP com o DLG."""
 
@@ -365,8 +412,8 @@ class Sensors:
         if sent != len(payload):
             raise RuntimeError("envio UDP incompleto")
         # self.flush()
-        self.filters :list[CascadedBiQuadFilter]= []
-        self.converters :list[Converter]= []
+        self.filters: list[CascadedBiQuadFilter] = []
+        self.converters: list[Converter] = []
         for i, cfg in enumerate(config.channel_configs):
             # cfg = config.channel_configs[i]
             payload = _SET_CH.pack(
@@ -470,21 +517,26 @@ class Sensors:
         # 3. Determine optimal cutoff frequency below the dominant noise/main frequency
         # If mains hum or noise is detected, set cutoff below it to flatten the signal
         if dominant_noise_freq > 2.0:
-            new_cutoff = dominant_noise_freq #* 0.8
+            new_cutoff = dominant_noise_freq  # * 0.8
         else:
             new_cutoff = self.rate_hz / 10.0  # Fallback safety margin
 
-        
         # Bound check according to BiQuadFilter constraints (< 0.499 * sample_rate)
         max_allowed_cutoff = 0.499 * self.rate_hz
         new_cutoff = max(0.5, min(new_cutoff, max_allowed_cutoff))
-        new_cutoff=25
+        new_cutoff = 25
         print(f"Channel {idx} cutoff set to {new_cutoff} Hz")
-        #new_filter = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
+        # new_filter = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
         new_filter = CascadedBiQuadFilter(self.rate_hz, new_cutoff, 1.0)
         self.filters[idx] = new_filter
 
-    def calibrate_filter(self, idx: int, n_samples: int = 512, min_freq: float = 2.0,max_cutoff:float=30.0):
+    def calibrate_filter(
+        self,
+        idx: int,
+        n_samples: int = 512,
+        min_freq: float = 2.0,
+        max_cutoff: float = 30.0,
+    ):
         """Automatically listens to the current signal on channel `idx`,
         analyzes noise frequencies via FFT, and updates the filter cutoff
         to the lowest-frequency significant noise peak.
@@ -565,8 +617,10 @@ class Sensors:
         # 4. Clamp to safe BiQuad range and apply filter
         max_allowed_cutoff = 0.498 * self.rate_hz
         new_cutoff = float(np.clip(new_cutoff, 0.5, max_allowed_cutoff))
-        new_cutoff=min(max_cutoff,new_cutoff)#NOTE:REWRITE THIS
-        print(f"Channel {idx}: lowest noise peak at {lowest_noise_freq} Hz -> cutoff set to {new_cutoff:.2f} Hz")
+        new_cutoff = min(max_cutoff, new_cutoff)  # NOTE:REWRITE THIS
+        print(
+            f"Channel {idx}: lowest noise peak at {lowest_noise_freq} Hz -> cutoff set to {new_cutoff:.2f} Hz"
+        )
         self.filters[idx] = CascadedBiQuadFilter(self.rate_hz, new_cutoff, 1.0)
 
     def start(self):
@@ -598,7 +652,7 @@ class Sensors:
             for i in range(N_CHANNELS):
                 b = float(np.mean(blocks[i]))
                 b = self.filters[i].process(b)
-                b=self.converters[i].process(b)
+                b = self.converters[i].process(b)
                 out_data[i] = b
         except socket.timeout:
             out_data = np.zeros(N_CHANNELS)
