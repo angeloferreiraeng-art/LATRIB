@@ -52,7 +52,7 @@ ADDR_VDI_FN2 = 0x1700 + 2
 ADDR_POS_LOW_PASS = 0x0500 + 4
 ADDR_POS_TIME_CTE = 0x0500 + 6
 
-ADDR_ENCODER_ANGLE=0x0B00+10
+ADDR_ENCODER_ANGLE = 0x0B00 + 10
 
 REG_P0B_07 = 0x0B07  # P0B-07 (abs pos, 32-bit) - historical naming
 REG_P0B_09 = 0x0B09  # P0B-09 (pos per revolution, 0..65535)
@@ -73,7 +73,7 @@ class MotorConfig:
     byte_size: int = 8
 
     @classmethod
-    def from_config(cls, src: dict[str, Any]) -> MotorConfig:
+    def from_config(cls, src: dict[str, str]) -> MotorConfig:
         return cls(
             port=src["MOTOR_PORT"],
             slave_id=int(src["MOTOR_ID"]),
@@ -99,6 +99,11 @@ class Motor:
         if not config:
             config = MotorConfig()  # default value
         try:
+            self.port = config.port
+            self.baud_rate = config.baud_rate
+            self.parity = config.parity
+            self.stop_bits = config.stop_bits
+            self.byte_size = config.byte_size
             self.client = ModbusSerialClient(
                 port=config.port,
                 baudrate=config.baud_rate,
@@ -165,10 +170,17 @@ class Motor:
         else:
             return r.registers
 
+    def configs_iter(self, dst: dict[str, str]):
+        dst["MOTOR_PORT"] = str(self.port)
+        dst["MOTOR_ID"] = str(1)
+        dst["MOTOR_BAUD_RATE"] = str(self.baud_rate)
+        self.parity
+        self.stop_bits
+        self.byte_size
+
     def get_pos(self):
         return self._read(ADDR_ENCODER_ANGLE)
 
-    
     def start(self):
         print(f":::::STARTING MOTOR WITH MODE {self.mode}::::::")
         if self.mode == "NONE":
@@ -262,28 +274,26 @@ class Motor:
         # assert(a==b),f"VALUE WRITE ERROR: TRIED TO WRITE {a}, READ BACK IS {b}"
         self.mode = "POS_SEC"
 
-
     def vel_ctrl(self, f, times):
         assert len(times) <= 8, "TIMES ARRAY CANT BE BIGGER THAN 8 ELEMENTS"
         v_plus = []
-        v_minus=[]
+        v_minus = []
         t = 0
         for dt in times:
-            t = t + (dt/10)
+            t = t + (dt / 10)
             speed = int(np.floor(f(t)))
             print(speed)
-            assert speed>=0 , "HALFSTROKE SPEED NEEDS TO BE POSITIVE."
+            assert speed >= 0, "HALFSTROKE SPEED NEEDS TO BE POSITIVE."
             v_plus.append(speed)
             v_minus.append(-speed)
-        speeds=np.append(v_plus,np.flip(v_minus))
-        full_times=np.append(times,times)
+        speeds = np.append(v_plus, np.flip(v_minus))
+        full_times = np.append(times, times)
         print(speeds)
-        assert (len(speeds)==len(full_times)), "VEL CONTROL THING BROKE"
-        self.vel_ctrl_unchecked(full_times,speeds)
-        
+        assert len(speeds) == len(full_times), "VEL CONTROL THING BROKE"
+        self.vel_ctrl_unchecked(full_times, speeds)
 
     # NOTE: THIS THROWS ERROR
-    def vel_ctrl_unchecked(self,times,speeds):
+    def vel_ctrl_unchecked(self, times, speeds):
         print(":::::SETTING SPEED SINE::::::")
         self._write(ADDR_VDI_LEVEL, 0)
         self._write(ADDR_VDI_ENABLE, 1)
@@ -307,7 +317,10 @@ class Motor:
 
         data = []
         t = 0
-        for s,dt, in zip(speeds,times):
+        for (
+            s,
+            dt,
+        ) in zip(speeds, times):
             t = t + dt
             speed = int(np.floor(s))
             if speed < 0:

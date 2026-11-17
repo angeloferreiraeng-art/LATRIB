@@ -7,42 +7,44 @@ import matplotlib.pyplot as plt
 
 orc = Orchestrator()
 orc.launch()
-orc.stop()
-#orc.start_calibration(1)
-orc.motor_vel()
+# orc.stop()
+# orc.start_calibration(1)
+# orc.motor_vel()
 
 
-win_size=64
-CHANNEL=3
+win_size = 64
+CHANNEL = 3
 
-#orc.start_calibration(CHANNEL)
-#time.sleep(1)
-#input("SET TO ZERO")
-#orc.ref_point(0)
-#input("SET TO TEN")
-#orc.ref_point(10)
-#orc.commit_calibration(CHANNEL)
+# orc.start_calibration(CHANNEL)
+# time.sleep(1)
+# input("SET TO ZERO")
+# orc.ref_point(0)
+# input("SET TO TEN")
+# orc.ref_point(10)
+# orc.commit_calibration(CHANNEL)
 
 input("ENTER TO CONTINUE")
 orc.start()
-orc.update()
+# orc.update()
+
+
+input("ENTER TO CONTINUE")
 orc.stop()
 time.sleep(5)
 exit()
 
 for i in range(1000):
-    read_val=orc.get_data()
+    read_val = orc.get_data()
     print(read_val)
 
+
 def eval_value():
-    read_val=orc.get_data()
-    #read_val=np.average(buff)
-    #amplitude=np.max(buff)-np.min(buff)
-    #print(f"LIMITS {np.max(buff)} , {np.min(buff)}")
-    #print(f" ADJUSTED VALUE: {read_val}, amplitude over window :{amplitude}")
+    read_val = orc.get_data()
+    # read_val=np.average(buff)
+    # amplitude=np.max(buff)-np.min(buff)
+    # print(f"LIMITS {np.max(buff)} , {np.min(buff)}")
+    # print(f" ADJUSTED VALUE: {read_val}, amplitude over window :{amplitude}")
     return read_val
-
-
 
 
 # --- Configuration ---
@@ -83,10 +85,7 @@ ani = animation.FuncAnimation(
     cache_frame_data=False,
 )
 
-#plt.tight_layout()
-#plt.show()
+# plt.tight_layout()
+# plt.show()
 orc.stop()
 time.sleep(5)
-
-
-

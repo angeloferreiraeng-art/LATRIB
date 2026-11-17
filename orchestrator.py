@@ -26,6 +26,7 @@ class Command:
     code: str
     value: int | float
 
+
 def peak_integral(a: float, b: float) -> float:
     """Calcs the % of the area of the given peak function compared to a sine wave"""
     p1 = a * (np.cos(0) - np.cos(np.pi))
@@ -36,7 +37,8 @@ def peak_integral(a: float, b: float) -> float:
 def peak_generator(omega: float, a: float, b: float, max_rpm: float = 1.0):
     """Generates a function that outputs the speed curve with the given factors"""
     f = lambda x: (
-         max_rpm*np.sign(np.sin(omega * x))
+        max_rpm
+        * np.sign(np.sin(omega * x))
         * (a * np.abs(np.sin(omega * x)) + (1 - a) * (np.abs(np.sin(omega * x)) ** b))
     )
     return f
@@ -61,14 +63,14 @@ def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue
         fail_event.set()
         return
 
-    NUM_SEGMENTS =8
+    NUM_SEGMENTS = 8
     SEG_TIME = 1
     times = np.ones(NUM_SEGMENTS) * SEG_TIME
-    half_period = np.sum(times)/10
-    print("period",2*half_period)
-    STROKE_SIZE = 50#rpm
-    omega =  np.pi / (half_period)
-    print("omega",omega)
+    half_period = np.sum(times) / 10
+    print("period", 2 * half_period)
+    STROKE_SIZE = 50  # rpm
+    omega = np.pi / (half_period)
+    print("omega", omega)
     a = 1
     b = 0
 
@@ -89,7 +91,7 @@ def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue
                 case Command(code="VEL_CTRL"):
                     modifier = peak_integral(a, b)
                     max_rpm = 0.5 * STROKE_SIZE / modifier
-                    f = peak_generator(omega, a, b,max_rpm=max_rpm)
+                    f = peak_generator(omega, a, b, max_rpm=max_rpm)
                     motor.vel_ctrl(f, times)
                 case Command(code="POS_CTRL"):
                     raise RuntimeError("NOT IMPLEMENTED!")
@@ -97,7 +99,7 @@ def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue
                     motor.analog_mode()
                 case Command(code="START"):
                     print("MOTR STARTING")
-                    #motor.start()
+                    # motor.start()
                 case Command(code="STOP"):
                     print("MOTR STOPING")
                     motor.stop()
@@ -114,7 +116,7 @@ def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue
 def _run_sensors(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue):
     try:
         config = SensorsConfig()
-        sensors = Sensors(config)
+        # sensors = Sensors(config)
     except Exception as e:
         print(f"Sensors initialization failure: {e}")
         fail_event.set()
@@ -122,25 +124,33 @@ def _run_sensors(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Que
 
     # acquisition loop
     reading = False
-    calibrating = False
     target_list = []
     read_list = []
     channel_idx: int = 0
+
     while True:
         try:
+            if reading:
+                print("READING")
+                # data = sensors.read_channel(3)
+                # print("READ DATA is:",data)
+                # out_buffer.put(data)
+
             new_cmd = _pop_from(cmd_buffer)
             match new_cmd:
+                case None:
+                    print("NO COMMANDS")
                 case Command(code="START"):
-                    sensors.start()
+                    # sensors.start()
                     reading = True
                 case Command(code="STOP"):
-                    sensors.stop()
+                    # sensors.stop()
                     reading = False
                 case Command(code="CALIBRATE"):
                     channel_idx = int(new_cmd.value)
-                    sensors.calibrate_filter(channel_idx)
+                    # sensors.calibrate_filter(channel_idx)
                 case Command(code="REF_POINT"):
-                    read = sensors.read_channel(channel_idx)
+                    # read = sensors.read_channel(channel_idx)
                     target = new_cmd.value
                     read_list.append(read)
                     target_list.append(target)
@@ -160,14 +170,7 @@ def _run_sensors(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Que
                     assert denominator != 0, "Cannot fit: all x values are identical"
                     a = (n * sum_xy - sum_x * sum_y) / denominator
                     b = (sum_y * sum_x2 - sum_x * sum_xy) / denominator
-                    sensors.set_converter(channel_idx, a, b)
-                case None:
-                    pass
-            if reading:
-                print("READING")
-                #data = sensors.read_channel(3)
-                #print("READ DATA is:",data)
-                #out_buffer.put(data)
+                    # sensors.set_converter(channel_idx, a, b)
 
         except Exception as e:
             print(f"Sensors failed: {e}")
@@ -244,7 +247,7 @@ class Orchestrator:
                 args=(self.motor_fail, self.motor_cmd, self.motor_out),
                 daemon=True,
             )
-            self.motor_thread.start()
+            # self.motor_thread.start()
 
             self.sensor_thread = threading.Thread(
                 target=_run_sensors,
@@ -277,6 +280,9 @@ class Orchestrator:
         self.sensors_cmd.put(cmd)
         self.state = State.READY
 
+    def dump_config(self):->str
+        pass
+
     def stop(self):
         cmd = Command(code="STOP", value=0)
         self.motor_cmd.put(cmd)
@@ -285,7 +291,7 @@ class Orchestrator:
         time.sleep(5)
 
     def start(self):
-        if self.state==State.READY:
+        if self.state == State.READY:
             cmd = Command(code="START", value=0)
             self.motor_cmd.put(cmd)
             self.sensors_cmd.put(cmd)
@@ -294,7 +300,7 @@ class Orchestrator:
             print("Trying to start outside of READY state, ignoring.")
 
     def motor_vel(self):
-        if self.state ==State.READY:
+        if self.state == State.READY:
             cmd = Command(code="VEL_CTRL", value=0)
             self.motor_cmd.put(cmd)
         else:
@@ -313,21 +319,21 @@ class Orchestrator:
             else:
                 print(data)
 
-    def get_data_buffered(self,buff_size:int=16)->np.array:
+    def get_data_buffered(self, buff_size: int = 16) -> np.array:
         """Outputs buffered data to the given file. May fail."""
-        out_buffer=np.ones(buff_size)
+        out_buffer = np.ones(buff_size)
         for i in range(buff_size):
             if self.sensors_out.empty():
-                data=0
+                data = 0
             else:
                 data = self.sensors_out.get()
                 out_buffer.append(data)
         return out_buffer
 
-    def get_data(self)->int:
+    def get_data(self) -> int:
         """Outputs buffered data to the given file. May fail."""
         if self.sensors_out.empty():
-            data=0
+            data = 0
         else:
             data = self.sensors_out.get()
         return data
