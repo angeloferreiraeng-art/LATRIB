@@ -104,7 +104,7 @@ class GUI:
 
     def stop(self):
         print("stoping")
-        self.orch.pause()
+        self.orch.stop()
 
     def redraw(self):
         self.ax.clear()

@@ -27,17 +27,18 @@ class Command:
     value: int | float
 
 
-def peak_integral(a, b):
+def peak_integral(a: float, b: float) -> float:
     """Calcs the % of the area of the given peak function compared to a sine wave"""
     p1 = a * (np.cos(0) - np.cos(np.pi))
     p2 = (1 - a) * np.sqrt(np.pi) * math.gamma((b + 1) / 2) / math.gamma((b + 2) / 2)
     return (p1 + p2) / 2
 
 
-def peak_generator(omega, a, b):
+def peak_generator(omega: float, a: float, b: float, max_value: float = 1.0):
     """Generates a function that outputs the speed curve with the given factors"""
     f = lambda x: (
-        np.sign(np.sin(omega * x))
+        max_value
+        * np.sign(np.sin(omega * x))
         * (a * np.abs(np.sin(omega * x)) + (1 - a) * (np.abs(np.sin(omega * x)) ** b))
     )
     return f
@@ -77,10 +78,18 @@ def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue
         try:
             new_cmd = _pop_from(cmd_buffer)
             match new_cmd:
+                case Command(code="SET_A"):
+                    val = new_cmd.value
+                    a = val
+                    print(f"A parameter set to {val}")
+                case Command(code="SET_B"):
+                    val = new_cmd.value
+                    b = val
+                    print(f"B parameter set to {val}")
                 case Command(code="VEL_CTRL"):
                     modifier = peak_integral(a, b)
-                    max_val = 0.5 * STROKE_SIZE / modifier
-                    f = peak_generator(omega, a, b)
+                    max_value = 0.5 * STROKE_SIZE / modifier
+                    f = peak_generator(omega, a, b, max_value=max_value)
                     motor.vel_ctrl(f, times)
                 case Command(code="POS_CTRL"):
                     raise RuntimeError("NOT IMPLEMENTED!")
@@ -175,11 +184,11 @@ class Orchestrator:
     sensor_thread: threading.Thread | None = None
 
     motor_fail: threading.Event = threading.Event()
-    motor_cmd: Queue = Queue()
+    motor_cmd: Queue[Command] = Queue()
     motor_out: Queue = Queue()
 
     sensors_fail: threading.Event = threading.Event()
-    sensors_cmd: Queue = Queue()
+    sensors_cmd: Queue[Command] = Queue()
     sensors_out: Queue = Queue()
 
     def __init__(self) -> None:
@@ -196,13 +205,16 @@ class Orchestrator:
         self.sensors_out = Queue()
 
     def eval_state(
-        self, init_ok: bool = False, start_on: bool = False, stop_on: bool = False
+        self,
+        init_ok: bool = False,
+        start_on: bool = False,
+        stop_on: bool = False,
+        calibrate_on: bool = False,
     ):
         """Receives all system signals for the grafcet of the system and
         evaluate the proper transition for the state machine
         """
-        state = self.state
-        match state:
+        match self.state:
             case State.ERROR:
                 return
             case State.INIT:
@@ -212,14 +224,16 @@ class Orchestrator:
                     self.state = State.ERROR
             case State.READY:
                 if not stop_on and start_on:
-                    self.motor_cmd.put("START")
-                    self.sensors_cmd.put("START")
+                    cmd = Command(code="START", value=0)
+                    self.motor_cmd.put(cmd)
+                    self.sensors_cmd.put(cmd)
                     self.state = State.RUNNING
                     return
             case State.RUNNING:
                 if stop_on and not start_on:
-                    self.motor_cmd.put("STOP")
-                    self.sensors_cmd.put("STOP")
+                    cmd = Command(code="STOP", value=0)
+                    self.motor_cmd.put(cmd)
+                    self.sensors_cmd.put(cmd)
                     self.state = State.STOP
 
     def check_state(self) -> str:
@@ -251,6 +265,7 @@ class Orchestrator:
         cmd = Command(code="CALIBRATE", value=channel)
         self.sensors_cmd.put(cmd)
         self.state = State.CALIBRATING
+        # self.eval_state()
 
     def ref_point(self, value: float):
         if self.state == State.CALIBRATING:
@@ -259,21 +274,26 @@ class Orchestrator:
         else:
             print("SYSTEM NOT IN CALIBRATION MODE, IGNORING.")
 
+    def commit_calibration(self, channel: int):
+        cmd = Command(code="CALIBRATE", value=channel)
+        self.sensors_cmd.put(cmd)
+        self.state = State.READY
+
     def stop(self):
-        self.motor_cmd.put("STOP")
-        self.sensors_cmd.put("STOP")
         self.eval_state(stop_on=True)
         # self.state = State.STOP
 
     def start(self):
-        self.motor_cmd.put("START")
-        self.sensors_cmd.put("START")
         self.eval_state(start_on=True)
         # self.state = State.RUNNING
 
     def motor_vel(self):
-        self.motor_cmd.put("VEL_CTRL")
+        cmd = Command(code="VEL_CTRL", value=0)
+        self.motor_cmd.put(cmd)
         # self.sensors_cmd.put("START")
+
+    def motor_a_factor(self, value):
+        pass
 
     def print_data(self):
         """Outputs buffered data to the given file. May fail."""
