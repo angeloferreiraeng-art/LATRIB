@@ -135,6 +135,8 @@ class ChannelConfig:
 
 @dataclass
 class SensorsConfig:
+    """Config info for sensors struct. for some reason the channels seem to be 1 indexed,
+      so IDK what config[0] is doing particularly."""
     ip_address: str = "192.168.1.100"
     port: int = 41401
     bind_ip: str = ""  # "" = 0.0.0.0
@@ -144,6 +146,7 @@ class SensorsConfig:
     timeout_s: float = 1.0  # timeout de leitura / confirmação
     channel_configs: list[ChannelConfig] = field(
         default_factory=lambda: [
+            ChannelConfig(),
             ChannelConfig.strain_gauge(),
             ChannelConfig(),
             ChannelConfig.encoder(),
@@ -415,6 +418,7 @@ class Sensors:
         self.filters: list[CascadedBiQuadFilter] = []
         self.converters: list[Converter] = []
         for i, cfg in enumerate(config.channel_configs):
+            #print(i,cfg)
             # cfg = config.channel_configs[i]
             payload = _SET_CH.pack(
                 OP_SETCHCFG,
@@ -449,7 +453,7 @@ class Sensors:
         self.stop()
         self.sock.close()
 
-    def acq_setup(self, rate_hz: float, n_bursts: int = 1) -> float:
+    def acq_setup_new(self, rate_hz: float, n_bursts: int = 1) -> float:
         """Configura a aquisição. Retorna a frequência real informada pelo aparelho."""
         icm = [0] * N_MAX_CHAN
         for i in range(N_CHANNELS):
@@ -492,8 +496,7 @@ class Sensors:
                 continue
             if code != OP_ACQSETUP_R:
                 continue
-            if len(resp) < _ACQ_SETUP_R.size:
-                raise RuntimeError("resposta AcqSetup truncada")
+            assert(len(resp)== _ACQ_SETUP_R.size),f"resposta AcqSetup truncada, expect :{_ACQ_SETUP_R.size}, got {len(resp)}"
             _, _, err, real = _ACQ_SETUP_R.unpack_from(resp)
             if err != 0:
                 raise RuntimeError(f"AcqSetup falhou (erro {err})")
@@ -501,9 +504,9 @@ class Sensors:
                 print(f"frequência pedida {rate_hz:.3f} Hz, real {real:.3f} Hz")
             return real
 
-    def acq_setup_old(self, rate_hz: float, n_bursts: int = 1) -> float:
+    def acq_setup(self, rate_hz: float, n_bursts: int = 1) -> float:
         """Configura a aquisição. Retorna a frequência real informada pelo aparelho."""
-        icm = [0] * N_MAX_CHAN
+        icm = [0] * N_CHANNELS
         for i in range(N_CHANNELS):
             icm[i] = _i16(i)
         payload = _ACQ_SETUP.pack(

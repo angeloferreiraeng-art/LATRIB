@@ -1,104 +1,49 @@
-from motor import Motor, MotorConfig
-from sensors import Sensors,SensorsConfig
 import time
+from orchestrator import Orchestrator
 import numpy as np
+from collections import deque
+import matplotlib.animation as animation
+import matplotlib.pyplot as plt
+
+orc = Orchestrator()
+orc.launch()
+orc.stop()
+#orc.start_calibration(1)
+orc.motor_vel()
 
 
 win_size=64
-CHANNEL=1
-config = SensorsConfig()#MotorConfig()
-sensor = Sensors(config)#Motor(config)
-sensor.stop()
+CHANNEL=3
 
-sensor.start()
-
-for i in range (10):
-    memory=[]
-    for i in range(win_size):
-        read=sensor.read_channel(CHANNEL)
-        memory.append(read)
-    read_val=np.average(memory)
-    amplitude=np.max(memory)-np.min(memory)
-    print(f"LIMITS {np.max(memory)} , {np.min(memory)}")
-    print(f" ADJUSTED VALUE: {read_val}, amplitude over window :{amplitude}")
-
-sensor.calibrate_filter(CHANNEL,max_cutoff=25)
-
+#orc.start_calibration(CHANNEL)
+#time.sleep(1)
+#input("SET TO ZERO")
+#orc.ref_point(0)
+#input("SET TO TEN")
+#orc.ref_point(10)
+#orc.commit_calibration(CHANNEL)
 
 input("ENTER TO CONTINUE")
-for i in range (10):
-    memory=[]
-    for i in range(win_size):
-        channels=sensor.read()
-        memory.append(channels[CHANNEL])
-    read_val=np.average(memory)
-    amplitude=np.max(memory)-np.min(memory)
-    print(f"LIMITS {np.max(memory)} , {np.min(memory)}")
-    print(f" ADJUSTED VALUE: {read_val}, amplitude over window :{amplitude}")
+orc.start()
+orc.update()
+orc.stop()
+time.sleep(5)
+exit()
 
+for i in range(1000):
+    read_val=orc.get_data()
+    print(read_val)
 
-#exit()
-
-read_list=[]
-target_list=[]
-input("SET TO ZERO")
-memory=[]
-for i in range(win_size):
-    channels=sensor.read()
-    memory.append(channels[CHANNEL])
-read_val=np.average(memory)
-print(read_val)
-time.sleep(1)
-target_list.append(0.0)
-read_list.append(read_val)
-
-input("SET TO TEN")
-memory=[]
-for i in range(win_size):
-    channels=sensor.read()
-    memory.append(channels[CHANNEL])
-read_val=np.average(memory)
-print(read_val)
-time.sleep(1)
-target_list.append(10.0)
-read_list.append(read_val)
-
-x = np.array(read_list, dtype=float)
-y = np.array(target_list, dtype=float)
-assert len(x) == len(y), "listx and listy must have the same length"
-assert len(x) >= 2, "At least 2 data points are required"
-# Least-squares solution via closed-form formula
-n = len(x)
-sum_x = np.sum(x)
-sum_y = np.sum(y)
-sum_xy = np.sum(x * y)
-sum_x2 = np.sum(x * x)
-denominator = n * sum_x2 - sum_x**2
-assert denominator != 0, "Cannot fit: all x values are identical"
-a = (n * sum_xy - sum_x * sum_y) / denominator
-b = (sum_y * sum_x2 - sum_x * sum_xy) / denominator
-sensor.set_converter(CHANNEL, a, b)
-
-
-input("ENTER TO CONTINUE")
 def eval_value():
-    memory=[]
-    for i in range(win_size):
-        channels=sensor.read()
-        memory.append(channels[CHANNEL])
-    read_val=np.average(memory)
-    amplitude=np.max(memory)-np.min(memory)
-    print(f"LIMITS {np.max(memory)} , {np.min(memory)}")
-    print(f" ADJUSTED VALUE: {read_val}, amplitude over window :{amplitude}")
+    read_val=orc.get_data()
+    #read_val=np.average(buff)
+    #amplitude=np.max(buff)-np.min(buff)
+    #print(f"LIMITS {np.max(buff)} , {np.min(buff)}")
+    #print(f" ADJUSTED VALUE: {read_val}, amplitude over window :{amplitude}")
     return read_val
 
 
-from collections import deque
-import math
-import time
-import matplotlib.animation as animation
-import matplotlib.pyplot as plt
-import numpy as np
+
 
 # --- Configuration ---
 WINDOW_SIZE = 200  # Number of points visible on screen
@@ -107,12 +52,6 @@ INTERVAL_MS = 30  # Refresh rate in milliseconds (~33 FPS)
 # Rolling buffer initialized with zeros
 data = deque([0.0] * WINDOW_SIZE, maxlen=WINDOW_SIZE)
 start_time = time.time()
-
-
-def read_value() -> float:
-    """Replace this with your actual sensor/socket/filter read."""
-    t = time.time() - start_time
-    return math.sin(2 * math.pi * 0.5 * t) + np.random.normal(0, 0.15)
 
 
 # --- Setup Plot ---
@@ -144,8 +83,10 @@ ani = animation.FuncAnimation(
     cache_frame_data=False,
 )
 
-plt.tight_layout()
-plt.show()
+#plt.tight_layout()
+#plt.show()
+orc.stop()
+time.sleep(5)
 
 
 

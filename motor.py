@@ -269,7 +269,7 @@ class Motor:
         v_minus=[]
         t = 0
         for dt in times:
-            t = t + dt
+            t = t + (dt/10)
             speed = int(np.floor(f(t)))
             print(speed)
             assert speed>=0 , "HALFSTROKE SPEED NEEDS TO BE POSITIVE."

@@ -26,7 +26,6 @@ class Command:
     code: str
     value: int | float
 
-
 def peak_integral(a: float, b: float) -> float:
     """Calcs the % of the area of the given peak function compared to a sine wave"""
     p1 = a * (np.cos(0) - np.cos(np.pi))
@@ -34,22 +33,21 @@ def peak_integral(a: float, b: float) -> float:
     return (p1 + p2) / 2
 
 
-def peak_generator(omega: float, a: float, b: float, max_value: float = 1.0):
+def peak_generator(omega: float, a: float, b: float, max_rpm: float = 1.0):
     """Generates a function that outputs the speed curve with the given factors"""
     f = lambda x: (
-        max_value
-        * np.sign(np.sin(omega * x))
+         max_rpm*np.sign(np.sin(omega * x))
         * (a * np.abs(np.sin(omega * x)) + (1 - a) * (np.abs(np.sin(omega * x)) ** b))
     )
     return f
 
 
-def _pop_from(queue: Queue) -> Command | None:
-    """Helper function to return an optional result from the queue"""
-    if queue.empty():
+def _pop_from(q: Queue) -> Command | None:
+    """Helper function to return an optional result from the queue without blocking."""
+    try:
+        return q.get_nowait()  # Or q.get(block=False)
+    except Empty:
         return None
-    else:
-        return queue.get()
 
 
 def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue):
@@ -63,14 +61,16 @@ def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue
         fail_event.set()
         return
 
-    NUM_SEGMENTS = 16
+    NUM_SEGMENTS =8
     SEG_TIME = 1
     times = np.ones(NUM_SEGMENTS) * SEG_TIME
-    period = np.sum(times)
-    STROKE_SIZE = 10
-    omega = 2 * np.pi / (period)
-    a = 0
-    b = 1
+    half_period = np.sum(times)/10
+    print("period",2*half_period)
+    STROKE_SIZE = 50#rpm
+    omega =  np.pi / (half_period)
+    print("omega",omega)
+    a = 1
+    b = 0
 
     current_cmd = None
 
@@ -88,16 +88,18 @@ def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue
                     print(f"B parameter set to {val}")
                 case Command(code="VEL_CTRL"):
                     modifier = peak_integral(a, b)
-                    max_value = 0.5 * STROKE_SIZE / modifier
-                    f = peak_generator(omega, a, b, max_value=max_value)
+                    max_rpm = 0.5 * STROKE_SIZE / modifier
+                    f = peak_generator(omega, a, b,max_rpm=max_rpm)
                     motor.vel_ctrl(f, times)
                 case Command(code="POS_CTRL"):
                     raise RuntimeError("NOT IMPLEMENTED!")
                 case Command(code="ANALOG_MODE"):
                     motor.analog_mode()
                 case Command(code="START"):
-                    motor.start()
+                    print("MOTR STARTING")
+                    #motor.start()
                 case Command(code="STOP"):
+                    print("MOTR STOPING")
                     motor.stop()
                 case None:
                     pass
@@ -162,8 +164,10 @@ def _run_sensors(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Que
                 case None:
                     pass
             if reading:
-                frame = sensors.read()
-                out_buffer.put(frame)
+                print("READING")
+                #data = sensors.read_channel(3)
+                #print("READ DATA is:",data)
+                #out_buffer.put(data)
 
         except Exception as e:
             print(f"Sensors failed: {e}")
@@ -224,16 +228,10 @@ class Orchestrator:
                     self.state = State.ERROR
             case State.READY:
                 if not stop_on and start_on:
-                    cmd = Command(code="START", value=0)
-                    self.motor_cmd.put(cmd)
-                    self.sensors_cmd.put(cmd)
                     self.state = State.RUNNING
                     return
             case State.RUNNING:
                 if stop_on and not start_on:
-                    cmd = Command(code="STOP", value=0)
-                    self.motor_cmd.put(cmd)
-                    self.sensors_cmd.put(cmd)
                     self.state = State.STOP
 
     def check_state(self) -> str:
@@ -280,16 +278,27 @@ class Orchestrator:
         self.state = State.READY
 
     def stop(self):
+        cmd = Command(code="STOP", value=0)
+        self.motor_cmd.put(cmd)
+        self.sensors_cmd.put(cmd)
         self.eval_state(stop_on=True)
-        # self.state = State.STOP
+        time.sleep(5)
 
     def start(self):
-        self.eval_state(start_on=True)
-        # self.state = State.RUNNING
+        if self.state==State.READY:
+            cmd = Command(code="START", value=0)
+            self.motor_cmd.put(cmd)
+            self.sensors_cmd.put(cmd)
+            self.eval_state(start_on=True)
+        else:
+            print("Trying to start outside of READY state, ignoring.")
 
     def motor_vel(self):
-        cmd = Command(code="VEL_CTRL", value=0)
-        self.motor_cmd.put(cmd)
+        if self.state ==State.READY:
+            cmd = Command(code="VEL_CTRL", value=0)
+            self.motor_cmd.put(cmd)
+        else:
+            print("Trying to set velocity outside READY state, ignoring")
         # self.sensors_cmd.put("START")
 
     def motor_a_factor(self, value):
@@ -303,6 +312,25 @@ class Orchestrator:
                 break
             else:
                 print(data)
+
+    def get_data_buffered(self,buff_size:int=16)->np.array:
+        """Outputs buffered data to the given file. May fail."""
+        out_buffer=np.ones(buff_size)
+        for i in range(buff_size):
+            if self.sensors_out.empty():
+                data=0
+            else:
+                data = self.sensors_out.get()
+                out_buffer.append(data)
+        return out_buffer
+
+    def get_data(self)->int:
+        """Outputs buffered data to the given file. May fail."""
+        if self.sensors_out.empty():
+            data=0
+        else:
+            data = self.sensors_out.get()
+        return data
 
     def write_data(self, file: TextIOWrapper):
         """Outputs buffered data to the given file. May fail."""
