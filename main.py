@@ -1,22 +1,12 @@
 import time
 
-from orchestrator import Orchestrator
+from sensors import Sensors,SensorsConfig
 
-config = {"MOTOR_PORT": "shit", "MOTOR_ID": 1, "MOTOR_BAUD_RATE": 110000}
+s_config = SensorsConfig()
+sensors = Sensors(s_config)
 
-
-orc = Orchestrator()
-orc.launch()
-orc.stop()
-#orc.start_calibration(1)
-orc.motor_vel()
-orc.start()
-#orc.update()
-#exit()
-#time.sleep(50)
-for i in range(10000):
-    pass
-orc.stop()
-time.sleep(5)
-exit()
+sensors.start()
+while True:
+    v=sensors.read_channel(3)
+    print(v)
 

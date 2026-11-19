@@ -687,6 +687,7 @@ class Sensors:
     def start(self):
         # self.flush()
         payload = _HDR.pack(OP_ACQSTART, 0)
+        self.sock.setblocking(False)
         self.sock.sendto(payload, self.address)
 
     def stop(self) -> None:
@@ -706,6 +707,7 @@ class Sensors:
 
     def read(self) -> np.ndarray:
         """Reads the next data frame in a nice manner. Filters and adjust value to calibrated units."""
+        #print("reading")
         try:
             raw, _ = self.sock.recvfrom(RECV_BUFFER)
             blocks = parse_pack(raw, N_CHANNELS)
@@ -716,29 +718,32 @@ class Sensors:
                 b = self.converters[i].process(b)
                 out_data[i] = b
         except socket.timeout:
+            print("timedout")
             out_data = np.zeros(N_CHANNELS)
         except ConnectionResetError:  # Windows: ICMP "port unreachable"
+            print("port unreachable")
             out_data = np.zeros(N_CHANNELS)
+        #print(out_data)
         return out_data
 
     def read_raw(self) -> np.ndarray:
-        """Reads the next data frame in a nice manner. Filters and adjust value to calibrated units."""
-        try:
-            raw, _ = self.sock.recvfrom(RECV_BUFFER)
-            blocks = parse_pack(raw, N_CHANNELS)
-            out_data = np.zeros(N_CHANNELS)
-            for i in range(N_CHANNELS):
-                b = float(np.mean(blocks[i]))
-                out_data[i] = b
-        except socket.timeout:
-            out_data = np.zeros(N_CHANNELS)
-        except ConnectionResetError:  # Windows: ICMP "port unreachable"
-            out_data = np.zeros(N_CHANNELS)
+        """Reads the next data frame raw, shits the bed on timeout."""
+        raw, _ = self.sock.recvfrom(RECV_BUFFER)
+        blocks = parse_pack(raw, N_CHANNELS)
+        out_data = np.zeros(N_CHANNELS)
+        for i in range(N_CHANNELS):
+            b = float(np.mean(blocks[i]))
+            out_data[i] = b
         return out_data
 
     def read_channel(self, idx: int):
         assert idx <= N_CHANNELS, "Trying to read channel out of bounds"
         frame = self.read()
+        return frame[idx]
+
+    def read_channel_raw(self, idx: int):
+        assert idx <= N_CHANNELS, "Trying to read channel out of bounds"
+        frame = self.read_raw()
         return frame[idx]
 
     def register_configs(self, dst):

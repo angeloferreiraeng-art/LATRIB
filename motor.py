@@ -170,7 +170,7 @@ class Motor:
         else:
             return r.registers
 
-    def configs_iter(self, dst: dict[str, str]):
+    def register_configs(self, dst: dict[str, str]):
         dst["MOTOR_PORT"] = str(self.port)
         dst["MOTOR_ID"] = str(1)
         dst["MOTOR_BAUD_RATE"] = str(self.baud_rate)

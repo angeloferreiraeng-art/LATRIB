@@ -7,36 +7,18 @@ import matplotlib.pyplot as plt
 
 orc = Orchestrator()
 orc.launch()
-# orc.stop()
-# orc.start_calibration(1)
-# orc.motor_vel()
 
-
-win_size = 64
 CHANNEL = 3
 
-# orc.start_calibration(CHANNEL)
-# time.sleep(1)
-# input("SET TO ZERO")
-# orc.ref_point(0)
-# input("SET TO TEN")
-# orc.ref_point(10)
-# orc.commit_calibration(CHANNEL)
-
-input("ENTER TO CONTINUE")
+#input("ENTER TO CONTINUE")
 orc.start()
 # orc.update()
-
-
-input("ENTER TO CONTINUE")
-orc.stop()
-time.sleep(5)
-exit()
-
-for i in range(1000):
+while True:
     read_val = orc.get_data()
     print(read_val)
 
+orc.stop()
+exit()
 
 def eval_value():
     read_val = orc.get_data()

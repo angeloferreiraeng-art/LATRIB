@@ -11,6 +11,7 @@ from motor import Motor, MotorConfig
 from sensors import Sensors, SensorsConfig
 from enum import Enum
 import math
+from copy import copy
 
 
 class State(Enum):
@@ -21,12 +22,8 @@ class State(Enum):
     CALIBRATING = 3
     STOP = 4
 
-
-@dataclass
 class Command:
-    code: str
-    value: int | float
-
+    pass
 
 def peak_integral(a: float, b: float) -> float:
     """Calcs the % of the area of the given peak function compared to a sine wave"""
@@ -45,23 +42,6 @@ def peak_generator(omega: float, a: float, b: float, max_rpm: float = 1.0):
     return f
 
 
-def _pop_from(q: Queue) -> Command | None:
-    """Helper function to return an optional result from the queue without blocking."""
-    try:
-        return q.get_nowait()  # Or q.get(block=False)
-    except Empty:
-        return None
-
-
-def _flush(q: Queue):
-    """Helper function to return an optional result from the queue without blocking."""
-    while True:
-        try:
-            q.get_nowait()  # Or q.get(block=False)
-        except Empty:
-            break
-
-
 def _run_motor(
     fail_event: threading.Event,
     cmd_buffer: Queue,
@@ -72,7 +52,7 @@ def _run_motor(
     try:
         m_config = MotorConfig() if config is None else MotorConfig.from_config(config)
         motor = Motor(m_config)
-        motor.stop()
+        #motor.stop()
     except Exception as e:
         print(f"Motor initialization failure: {e}")
         fail_event.set()
@@ -107,126 +87,38 @@ def _run_motor(
                     modifier = peak_integral(a, b)
                     max_rpm = 0.5 * STROKE_SIZE / modifier
                     f = peak_generator(omega, a, b, max_rpm=max_rpm)
-                    motor.vel_ctrl(f, times)
+                    #motor.vel_ctrl(f, times)
                 case Command(code="POS_CTRL"):
                     raise RuntimeError("NOT IMPLEMENTED!")
                 case Command(code="ANALOG_MODE"):
-                    motor.analog_mode()
+                    #motor.analog_mode()
+                    pass
                 case Command(code="START"):
                     print("MOTR STARTING")
                     # motor.start()
                 case Command(code="STOP"):
                     print("MOTR STOPING")
-                    motor.stop()
+                    #motor.stop()
                 case None:
                     pass
         except Exception as e:
             print(f"Motor operation failure: {e}")
             fail_event.set()
-            motor.stop()
-            return
-
-
-# top level scope for the dlg400 sensor thread
-def _run_sensors(
-    sensor: Sensors,
-    fail_event: threading.Event,
-    cmd_buffer: Queue[Command],
-    out_buffer: Queue,
-    config: dict[str, str] | None = None,
-):
-    try:
-        s_config = (
-            SensorsConfig() if config is None else SensorsConfig.from_config(config)
-        )
-        sensors = Sensors(s_config)
-    except Exception as e:
-        print(f"Sensors initialization failure: {e}")
-        fail_event.set()
-        return
-
-    # acquisition loop
-    reading = False
-    target_list = []
-    read_list = []
-    channel_idx: int = 0
-
-    while True:
-        try:
-            if reading:
-                print("READING")
-                # data = sensors.read_channel(3)
-                # print("READ DATA is:",data)
-                # out_buffer.put(data)
-            new_cmd = _pop_from(cmd_buffer)
-            match new_cmd:
-                case None:
-                    print("NO COMMANDS")
-                case Command(code="START"):
-                    # sensors.start()
-                    reading = True
-                case Command(code="STOP"):
-                    # sensors.stop()
-                    reading = False
-                case Command(code="CALIBRATE"):
-                    channel_idx = int(new_cmd.value)
-                    # sensors.calibrate_filter(channel_idx)
-                case Command(code="REF_POINT"):
-                    # read = sensors.read_channel(channel_idx)
-                    target = new_cmd.value
-                    read_list.append(read)
-                    target_list.append(target)
-                case Command(code="CAL_COMMIT"):  # commits to calibration set
-                    x = np.array(read_list, dtype=float)
-                    y = np.array(target_list, dtype=float)
-                    assert len(x) == len(y), "listx and listy must have the same length"
-                    assert len(x) >= 2, "At least 2 data points are required"
-                    # Least-squares solution via closed-form formula
-                    n = len(x)
-                    sum_x = np.sum(x)
-                    sum_y = np.sum(y)
-                    sum_xy = np.sum(x * y)
-                    sum_x2 = np.sum(x * x)
-
-                    denominator = n * sum_x2 - sum_x**2
-                    assert denominator != 0, "Cannot fit: all x values are identical"
-                    a = (n * sum_xy - sum_x * sum_y) / denominator
-                    b = (sum_y * sum_x2 - sum_x * sum_xy) / denominator
-                    # sensors.set_converter(channel_idx, a, b)
-
-        except Exception as e:
-            print(f"Sensors failed: {e}")
-            fail_event.set()
+            #motor.stop()
             return
 
 
 class Orchestrator:
     """Top class state object"""
-
     state: State = State.INIT
-    motor_thread: threading.Thread | None = None
-    sensor_thread: threading.Thread | None = None
-
-    motor_fail: threading.Event = threading.Event()
-    motor_cmd: Queue[Command] = Queue()
-    motor_out: Queue = Queue()
-
-    sensors_fail: threading.Event = threading.Event()
-    sensors_cmd: Queue[Command] = Queue()
-    sensors_out: Queue = Queue()
 
     def __init__(self) -> None:
         self.state = State.INIT
-        self.motor_thread = None
-        self.sensor_thread = None
-
-        self.motor_fail = threading.Event()
-        self.motor_cmd = Queue()
-        self.motor_out = Queue()
-
-        self.sensors_fail = threading.Event()
-        self.sensors_cmd = Queue()
-        self.sensors_out = Queue()
+        self.motor = None
+        self.sensor = None
+        self.channel_idx=0
+        self.read_list=[]
+        self.ref_list=[]
 
     def eval_state(
         self,
@@ -259,77 +151,81 @@ class Orchestrator:
 
     def launch(self, config: dict[str, str] | None = None):
         try:
-            self.motor_thread = threading.Thread(
-                target=_run_motor,
-                args=(self.motor_fail, self.motor_cmd, self.motor_out, config),
-                daemon=True,
+            s_config = (
+                SensorsConfig() if config is None else SensorsConfig.from_config(config)
             )
-            # self.motor_thread.start()
-
-            self.sensor_thread = threading.Thread(
-                target=_run_sensors,
-                args=(self.sensors_fail, self.sensors_cmd, self.sensors_out, config),
-                daemon=True,
-            )
-            self.sensor_thread.start()
-            self.eval_state(init_ok=True)
-            # self.state = State.READY
+            self.sensors = Sensors(s_config)
+            m_config = MotorConfig() if config is None else MotorConfig.from_config(config)
+            self.motor = Motor(m_config)
+            #self.motor.stop()
         except Exception as e:
             print("::::Orchestrator launch failed!:::::")
             self.eval_state(init_ok=False)
             # self.state = State.ERROR
+        self.state=State.READY
+        print("launced")
 
     def start_calibration(self, channel: int):
-        cmd = Command(code="CALIBRATE", value=channel)
-        self.sensors_cmd.put(cmd)
         self.state = State.CALIBRATING
-        # self.eval_state()
+        self.channel_idx=channel
+        self.sensors.calibrate_filter(channel)
+
 
     def ref_point(self, value: float):
         if self.state == State.CALIBRATING:
-            cmd = Command(code="REF_POINT", value=value)
-            self.sensors_cmd.put(cmd)
+            print("CHANNEL",self.channel_idx)
+            read = self.sensors.read_channel_raw(self.channel_idx)
+            print(value,read)
+            self.ref_list.append(value)
+            self.read_list.append(read)
+        # self.eval_state()
         else:
             print("SYSTEM NOT IN CALIBRATION MODE, IGNORING.")
 
     def commit_calibration(self, channel: int):
-        cmd = Command(code="CALIBRATE", value=channel)
-        self.sensors_cmd.put(cmd)
+        x = np.array(self.read_list, dtype=float)
+        y = np.array(self.ref_list, dtype=float)
+        assert len(x) == len(y), "listx and listy must have the same length"
+        assert len(x) >= 2, "At least 2 data points are required"
+        # Least-squares solution via closed-form formula
+        n = len(x)
+        sum_x = np.sum(x)
+        sum_y = np.sum(y)
+        sum_xy = np.sum(x * y)
+        sum_x2 = np.sum(x * x)
+        denominator = n * sum_x2 - sum_x**2
+        assert denominator != 0, "Cannot fit: all x values are identical"
+        a = (n * sum_xy - sum_x * sum_y) / denominator
+        b = (sum_y * sum_x2 - sum_x * sum_xy) / denominator
+        self.sensors.set_converter(self.channel_idx, a, b)
+        self.read_list=[]
+        self.ref_list=[]
         self.state = State.READY
 
     def dump_config(self, path: Path):
-        cmd = Command(code="DUMP_CFG", value=0)
-        _flush(self.sensors_cmd)
-        _flush(self.motor_cmd)
-        self.sensors_cmd.put(cmd)
-        self.motor_cmd.put(cmd)
-        s_dict = self.sensors_out.get()
-        m_dict = self.motor_out.get()
-        cfg = s_dict | m_dict
+        cfg={}
+        self.sensors.register_configs(cfg)
+        self.motor.register_configs(cfg)
         with open(path, "w") as f:
             for key, value in cfg.items():
                 f.write(f"{key}={value}\n")
 
     def stop(self):
-        cmd = Command(code="STOP", value=0)
-        self.motor_cmd.put(cmd)
-        self.sensors_cmd.put(cmd)
+        self.motor.stop()
+        self.sensors.stop()
         self.eval_state(stop_on=True)
-        time.sleep(5)
 
     def start(self):
         if self.state == State.READY:
-            cmd = Command(code="START", value=0)
-            self.motor_cmd.put(cmd)
-            self.sensors_cmd.put(cmd)
-            self.eval_state(start_on=True)
+            self.sensors.start()
+            #self.motor.start()
+            print("started")
         else:
-            print("Trying to start outside of READY state, ignoring.")
+            print(f"Trying to start on state {self.state.name}, ignoring.")
 
     def motor_vel(self):
         if self.state == State.READY:
-            cmd = Command(code="VEL_CTRL", value=0)
-            self.motor_cmd.put(cmd)
+            self.motor.vel_ctrl()
         else:
             print("Trying to set velocity outside READY state, ignoring")
         # self.sensors_cmd.put("START")
@@ -346,24 +242,10 @@ class Orchestrator:
             else:
                 print(data)
 
-    def get_data_buffered(self, buff_size: int = 16) -> np.array:
+    def get_data(self,channel=3) -> int:
         """Outputs buffered data to the given file. May fail."""
-        out_buffer = np.ones(buff_size)
-        for i in range(buff_size):
-            if self.sensors_out.empty():
-                data = 0
-            else:
-                data = self.sensors_out.get()
-                out_buffer.append(data)
-        return out_buffer
+        return self.sensors.read_channel(channel)
 
-    def get_data(self) -> int:
-        """Outputs buffered data to the given file. May fail."""
-        if self.sensors_out.empty():
-            data = 0
-        else:
-            data = self.sensors_out.get()
-        return data
 
     def write_data(self, file: TextIOWrapper):
         """Outputs buffered data to the given file. May fail."""
@@ -374,8 +256,3 @@ class Orchestrator:
                 break
             else:
                 w.writerow([data])
-
-    def update(self):
-        if self.motor_fail.is_set() or self.sensors_fail.is_set():
-            print("FOUND ERROR DURING UPDATE")
-            self.state = State.ERROR
