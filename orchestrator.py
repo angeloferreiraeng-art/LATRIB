@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from io import FileIO, TextIOWrapper
+from pathlib import Path
 import threading
 import time
 import csv
@@ -52,11 +53,25 @@ def _pop_from(q: Queue) -> Command | None:
         return None
 
 
-def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue):
+def _flush(q: Queue):
+    """Helper function to return an optional result from the queue without blocking."""
+    while True:
+        try:
+            q.get_nowait()  # Or q.get(block=False)
+        except Empty:
+            break
+
+
+def _run_motor(
+    fail_event: threading.Event,
+    cmd_buffer: Queue,
+    out_buffer: Queue,
+    config: dict[str, str] | None = None,
+):
     motor = None
     try:
-        config = MotorConfig()
-        motor = Motor(config)
+        m_config = MotorConfig() if config is None else MotorConfig.from_config(config)
+        motor = Motor(m_config)
         motor.stop()
     except Exception as e:
         print(f"Motor initialization failure: {e}")
@@ -113,10 +128,18 @@ def _run_motor(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue
 
 
 # top level scope for the dlg400 sensor thread
-def _run_sensors(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Queue):
+def _run_sensors(
+    sensor: Sensors,
+    fail_event: threading.Event,
+    cmd_buffer: Queue[Command],
+    out_buffer: Queue,
+    config: dict[str, str] | None = None,
+):
     try:
-        config = SensorsConfig()
-        # sensors = Sensors(config)
+        s_config = (
+            SensorsConfig() if config is None else SensorsConfig.from_config(config)
+        )
+        sensors = Sensors(s_config)
     except Exception as e:
         print(f"Sensors initialization failure: {e}")
         fail_event.set()
@@ -135,7 +158,6 @@ def _run_sensors(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Que
                 # data = sensors.read_channel(3)
                 # print("READ DATA is:",data)
                 # out_buffer.put(data)
-
             new_cmd = _pop_from(cmd_buffer)
             match new_cmd:
                 case None:
@@ -176,11 +198,6 @@ def _run_sensors(fail_event: threading.Event, cmd_buffer: Queue, out_buffer: Que
             print(f"Sensors failed: {e}")
             fail_event.set()
             return
-
-
-def global_config():
-    config = {"MOTOR_PORT": "COM5", "MOTOR_ID": 1, "MOTOR_BAUD_RATE": 19200}
-    return config
 
 
 class Orchestrator:
@@ -238,20 +255,20 @@ class Orchestrator:
                     self.state = State.STOP
 
     def check_state(self) -> str:
-        return self.state
+        return self.state.name
 
-    def launch(self):
+    def launch(self, config: dict[str, str] | None = None):
         try:
             self.motor_thread = threading.Thread(
                 target=_run_motor,
-                args=(self.motor_fail, self.motor_cmd, self.motor_out),
+                args=(self.motor_fail, self.motor_cmd, self.motor_out, config),
                 daemon=True,
             )
             # self.motor_thread.start()
 
             self.sensor_thread = threading.Thread(
                 target=_run_sensors,
-                args=(self.sensors_fail, self.sensors_cmd, self.sensors_out),
+                args=(self.sensors_fail, self.sensors_cmd, self.sensors_out, config),
                 daemon=True,
             )
             self.sensor_thread.start()
@@ -280,8 +297,18 @@ class Orchestrator:
         self.sensors_cmd.put(cmd)
         self.state = State.READY
 
-    def dump_config(self):->str
-        pass
+    def dump_config(self, path: Path):
+        cmd = Command(code="DUMP_CFG", value=0)
+        _flush(self.sensors_cmd)
+        _flush(self.motor_cmd)
+        self.sensors_cmd.put(cmd)
+        self.motor_cmd.put(cmd)
+        s_dict = self.sensors_out.get()
+        m_dict = self.motor_out.get()
+        cfg = s_dict | m_dict
+        with open(path, "w") as f:
+            for key, value in cfg.items():
+                f.write(f"{key}={value}\n")
 
     def stop(self):
         cmd = Command(code="STOP", value=0)

@@ -136,7 +136,8 @@ class ChannelConfig:
 @dataclass
 class SensorsConfig:
     """Config info for sensors struct. for some reason the channels seem to be 1 indexed,
-      so IDK what config[0] is doing particularly."""
+    so IDK what config[0] is doing particularly."""
+
     ip_address: str = "192.168.1.100"
     port: int = 41401
     bind_ip: str = ""  # "" = 0.0.0.0
@@ -158,7 +159,7 @@ class SensorsConfig:
     )
 
     @classmethod
-    def from_config(cls, src: dict[str, Any]) -> SensorsConfig:
+    def from_config(cls, src: dict[str, str]) -> SensorsConfig:
         ch_confs = []
         for i in range(N_CHANNELS):
             ch_type = int(src[f"SENSORS_CHANNEL{i}_TYPE"])
@@ -418,7 +419,7 @@ class Sensors:
         self.filters: list[CascadedBiQuadFilter] = []
         self.converters: list[Converter] = []
         for i, cfg in enumerate(config.channel_configs):
-            #print(i,cfg)
+            # print(i,cfg)
             # cfg = config.channel_configs[i]
             payload = _SET_CH.pack(
                 OP_SETCHCFG,
@@ -496,7 +497,9 @@ class Sensors:
                 continue
             if code != OP_ACQSETUP_R:
                 continue
-            assert(len(resp)== _ACQ_SETUP_R.size),f"resposta AcqSetup truncada, expect :{_ACQ_SETUP_R.size}, got {len(resp)}"
+            assert len(resp) == _ACQ_SETUP_R.size, (
+                f"resposta AcqSetup truncada, expect :{_ACQ_SETUP_R.size}, got {len(resp)}"
+            )
             _, _, err, real = _ACQ_SETUP_R.unpack_from(resp)
             if err != 0:
                 raise RuntimeError(f"AcqSetup falhou (erro {err})")
