@@ -418,6 +418,7 @@ class Sensors:
         # self.flush()
         self.filters: list[CascadedBiQuadFilter] = []
         self.converters: list[Converter] = []
+        self.types=[]
         for i, cfg in enumerate(config.channel_configs):
             # print(i,cfg)
             # cfg = config.channel_configs[i]
@@ -439,6 +440,7 @@ class Sensors:
             assert sent == len(payload), (
                 f"Failed to configure DataLogger CH-{i}, Config was truncated."
             )
+            self.types.append(cfg.t_sensor)
             filter = CascadedBiQuadFilter(self.rate_hz, cfg.cutoff_freq, cfg.resonance)
             filter.set_unfiltered()
             self.filters.append(filter)
@@ -687,7 +689,7 @@ class Sensors:
     def start(self):
         # self.flush()
         payload = _HDR.pack(OP_ACQSTART, 0)
-        self.sock.setblocking(False)
+        #self.sock.setblocking(False)
         self.sock.sendto(payload, self.address)
 
     def stop(self) -> None:
@@ -726,6 +728,13 @@ class Sensors:
         #print(out_data)
         return out_data
 
+
+
+    def read_channel(self, idx: int):
+        assert idx <= N_CHANNELS, "Trying to read channel out of bounds"
+        frame = self.read()
+        return frame[idx]
+
     def read_raw(self) -> np.ndarray:
         """Reads the next data frame raw, shits the bed on timeout."""
         raw, _ = self.sock.recvfrom(RECV_BUFFER)
@@ -736,19 +745,29 @@ class Sensors:
             out_data[i] = b
         return out_data
 
-    def read_channel(self, idx: int):
-        assert idx <= N_CHANNELS, "Trying to read channel out of bounds"
-        frame = self.read()
-        return frame[idx]
-
     def read_channel_raw(self, idx: int):
         assert idx <= N_CHANNELS, "Trying to read channel out of bounds"
         frame = self.read_raw()
         return frame[idx]
 
+    def read_buffered(self,idx:int,b_size=32):
+        out=np.zeros(b_size)
+        i=0
+        while True:
+                try:
+                    frame = self.read_raw()
+                    out[i]=frame[idx]
+                    i=i+1
+                    if i==b_size:
+                        break
+                except Exception as e:
+                    print(f" read found exception: {e}")
+        return np.mean(out)
+
     def register_configs(self, dst):
         """Pushes the current configs to the output table for calibration record."""
         for i in range(N_CHANNELS):
+            dst[f"SENSORS_CHANNEL{i}_TYPE"] = str(self.types[i])
             dst[f"SENSORS_CHANNEL{i}_CUTOFF"] = str(self.filters[i].cutoff)
             dst[f"SENSORS_CHANNEL{i}_RESONANCE"] = str(self.filters[i].resonance)
             dst[f"SENSORS_CHANNEL{i}_GAIN"] = str(self.converters[i].gain)

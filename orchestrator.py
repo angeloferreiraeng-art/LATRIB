@@ -107,6 +107,23 @@ def _run_motor(
             #motor.stop()
             return
 
+def parse_config(path):
+    config = {}
+
+    with open(path, 'r') as file:
+        for line in file:
+            # Remove leading/trailing whitespace
+            line = line.strip()
+            
+            # Skip empty lines and comment lines
+            if not line or line.startswith('#'):
+                continue
+                
+            # Split into key and value (only at the first '=' to allow '=' in values)
+            if '=' in line:
+                key, value = line.split('=', 1)
+                config[key.strip()] = value.strip()
+    return config
 
 class Orchestrator:
     """Top class state object"""
@@ -160,6 +177,7 @@ class Orchestrator:
             #self.motor.stop()
         except Exception as e:
             print("::::Orchestrator launch failed!:::::")
+            print(e)
             self.eval_state(init_ok=False)
             # self.state = State.ERROR
         self.state=State.READY
@@ -168,13 +186,19 @@ class Orchestrator:
     def start_calibration(self, channel: int):
         self.state = State.CALIBRATING
         self.channel_idx=channel
+        self.sensors.start()
         self.sensors.calibrate_filter(channel)
 
 
     def ref_point(self, value: float):
         if self.state == State.CALIBRATING:
             print("CHANNEL",self.channel_idx)
-            read = self.sensors.read_channel_raw(self.channel_idx)
+            while True:
+                try:
+                    read = self.sensors.read_buffered(self.channel_idx)
+                    break
+                except Exception as e:
+                    print(f" read found exception: {e}")
             print(value,read)
             self.ref_list.append(value)
             self.read_list.append(read)

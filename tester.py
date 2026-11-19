@@ -1,12 +1,14 @@
 import time
-from orchestrator import Orchestrator
+from orchestrator import Orchestrator,parse_config
 import numpy as np
 from collections import deque
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 
+CONFIG_FILE="config.txt"
+cfg=parse_config(CONFIG_FILE)
 orc = Orchestrator()
-orc.launch()
+orc.launch(cfg)
 
 CHANNEL = 3
 
