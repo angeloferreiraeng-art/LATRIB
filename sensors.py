@@ -418,7 +418,7 @@ class Sensors:
         # self.flush()
         self.filters: list[CascadedBiQuadFilter] = []
         self.converters: list[Converter] = []
-        self.types=[]
+        self.types = []
         for i, cfg in enumerate(config.channel_configs):
             # print(i,cfg)
             # cfg = config.channel_configs[i]
@@ -689,7 +689,7 @@ class Sensors:
     def start(self):
         # self.flush()
         payload = _HDR.pack(OP_ACQSTART, 0)
-        #self.sock.setblocking(False)
+        # self.sock.setblocking(False)
         self.sock.sendto(payload, self.address)
 
     def stop(self) -> None:
@@ -698,7 +698,7 @@ class Sensors:
 
     def set_filter(self, idx: int, cutoff: float):
         assert idx <= N_CHANNELS, "SETTING FILTER OUT OF BOUNDS"
-        new_filter = BiQuadFilter(self.rate_hz, cutoff, 0.7071)
+        new_filter = BiQuadFilter(self.rate_hz, cutoff, 1.0)
         self.filters[idx] = new_filter
 
     def set_converter(self, idx: int, gain: float, offset: float):
@@ -707,9 +707,9 @@ class Sensors:
         new_converter = Converter(offset, gain)
         self.converters[idx] = new_converter
 
-    def read(self) -> np.ndarray:
+    def read_old(self) -> np.ndarray:
         """Reads the next data frame in a nice manner. Filters and adjust value to calibrated units."""
-        #print("reading")
+        # print("reading")
         try:
             raw, _ = self.sock.recvfrom(RECV_BUFFER)
             blocks = parse_pack(raw, N_CHANNELS)
@@ -725,44 +725,48 @@ class Sensors:
         except ConnectionResetError:  # Windows: ICMP "port unreachable"
             print("port unreachable")
             out_data = np.zeros(N_CHANNELS)
-        #print(out_data)
+        # print(out_data)
         return out_data
-
-
 
     def read_channel(self, idx: int):
         assert idx <= N_CHANNELS, "Trying to read channel out of bounds"
         frame = self.read()
         return frame[idx]
 
-    def read_raw(self) -> np.ndarray:
+    def read(self) -> np.ndarray:
+        """Reads the next data frame in a nice manner. Filters and adjust value to calibrated units."""
+        raw = self.read_raw()
+        out_data = []  # np.zeros(N_CHANNELS)
+        for r, f, c in zip(raw, self.filters, self.converters):
+            b = f.process(r)
+            b = c.process(b)
+            out_data.append(b)
+        return np.array(out_data)
+
+    def read_raw(self):
+        """Reads until there is no errors, garantees a value"""
+        while True:
+            try:
+                return self.read_unchecked()
+            except _:
+                pass
+
+    def read_unchecked(self) -> np.ndarray:
         """Reads the next data frame raw, shits the bed on timeout."""
         raw, _ = self.sock.recvfrom(RECV_BUFFER)
         blocks = parse_pack(raw, N_CHANNELS)
-        out_data = np.zeros(N_CHANNELS)
+        out_data = np.nan * np.ones(N_CHANNELS)
         for i in range(N_CHANNELS):
             b = float(np.mean(blocks[i]))
             out_data[i] = b
         return out_data
 
-    def read_channel_raw(self, idx: int):
-        assert idx <= N_CHANNELS, "Trying to read channel out of bounds"
-        frame = self.read_raw()
-        return frame[idx]
-
-    def read_buffered(self,idx:int,b_size=32):
-        out=np.zeros(b_size)
-        i=0
-        while True:
-                try:
-                    frame = self.read_raw()
-                    out[i]=frame[idx]
-                    i=i+1
-                    if i==b_size:
-                        break
-                except Exception as e:
-                    print(f" read found exception: {e}")
-        return np.mean(out)
+    def read_buffered(self, b_size: int = 32):
+        out = np.zeros((N_CHANNELS, b_size))
+        for i in range(b_size):
+            frame = self.read_raw()
+            out[:, i] = frame
+        return np.mean(out, axis=0)
 
     def register_configs(self, dst):
         """Pushes the current configs to the output table for calibration record."""

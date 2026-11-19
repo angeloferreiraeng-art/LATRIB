@@ -63,6 +63,23 @@ REG_P05_02 = 0x0502  # P05-02 (command units per revolution)
 REG_P0C_26 = 0x0C26  # word order
 
 
+def peak_integral(a: float, b: float) -> float:
+    """Calcs the % of the area of the given peak function compared to a sine wave"""
+    p1 = a * (np.cos(0) - np.cos(np.pi))
+    p2 = (1 - a) * np.sqrt(np.pi) * math.gamma((b + 1) / 2) / math.gamma((b + 2) / 2)
+    return (p1 + p2) / 2
+
+
+def peak_generator(omega: float, a: float, b: float, max_rpm: float = 1.0):
+    """Generates a function that outputs the speed curve with the given factors"""
+    f = lambda x: (
+        max_rpm
+        * np.sign(np.sin(omega * x))
+        * (a * np.abs(np.sin(omega * x)) + (1 - a) * (np.abs(np.sin(omega * x)) ** b))
+    )
+    return f
+
+
 @dataclass
 class MotorConfig:
     port: str = "COM5"
@@ -115,6 +132,8 @@ class Motor:
             self.client.connect()
             self.state = "READY"
             self.mode = "NONE"
+            self.a_factor = 1
+            self.b_factor = 0
         except Exception as e:
             raise RuntimeError(f"CONNECTION ERROR:::{e}")
 
@@ -292,6 +311,35 @@ class Motor:
         assert len(speeds) == len(full_times), "VEL CONTROL THING BROKE"
         self.vel_ctrl_unchecked(full_times, speeds)
 
+    def set_vel_profile(self):
+        NUM_SEGMENTS = 8
+        SEG_TIME = 1
+        times = np.ones(NUM_SEGMENTS) * SEG_TIME
+        half_period = np.sum(times) / 10
+        print("period", 2 * half_period)
+        STROKE_SIZE = 50  # rpm
+        omega = np.pi / (half_period)
+        print("omega", omega)
+        modifier = peak_integral(self.a_factor, self.b_factor)
+        max_rpm = 0.5 * STROKE_SIZE / modifier
+        f = peak_generator(omega, self.a_factor, self.b_factor, max_rpm=max_rpm)
+        v_plus = []
+        v_minus = []
+        t = 0
+        for dt in times:
+            t = t + (dt / 10)
+            speed = int(np.floor(f(t)))
+            print(speed)
+            assert speed >= 0, "HALFSTROKE SPEED NEEDS TO BE POSITIVE."
+            v_plus.append(speed)
+            v_minus.append(-speed)
+        speeds = np.append(v_plus, np.flip(v_minus))
+        full_times = np.append(times, times)
+        print(speeds)
+        assert len(speeds) == len(full_times), "VEL CONTROL THING BROKE"
+        self.vel_ctrl_unchecked(full_times, speeds)
+        self.mode = "VEL_CTRL"
+
     # NOTE: THIS THROWS ERROR
     def vel_ctrl_unchecked(self, times, speeds):
         print(":::::SETTING SPEED SINE::::::")
@@ -334,7 +382,6 @@ class Motor:
             self._write(ADDR_MULTI_SPEED_FIRST + i, d)
             v = self._read(ADDR_MULTI_SPEED_FIRST + i)
             assert d == v, f"VALUE WRITE ERROR: TRIED TO WRITE {d}, READ BACK IS {v}"
-        self.mode = "VEL_SEC"
 
 
 if __name__ == "__main__":
