@@ -131,6 +131,7 @@ class Orchestrator:
         self.sensors.set_converter(self.channel_idx, a, b)
         self.read_list.clear()
         self.ref_list.clear()
+        self.sensors.stop()
         self.state = State.READY
 
     def commit_profile(self):
@@ -153,7 +154,7 @@ class Orchestrator:
         if self.state == State.READY:
             self.sensors.start()
             # self.motor.start()
-            print("started")
+            self.state = State.RUNNING
         else:
             print(f"Trying to start on state {self.state.name}, ignoring.")
 
@@ -162,8 +163,13 @@ class Orchestrator:
 
     def read_channel(self, channel) -> float:
         """Outputs buffered data to the given file. May fail."""
-        frame = self.sensors.read()
-        return frame[channel]
+        if self.state == State.RUNNING:
+            frame = self.sensors.read()
+            print("reading")
+            return frame[channel]
+        else:
+            print("Sensors are not activated!")
+            return np.nan
 
     def read_channel_raw(self, channel) -> float:
         frame = self.sensors.read_raw()
