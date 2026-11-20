@@ -290,109 +290,6 @@ class BiQuadFilter:
         self.a4 = a2 / a0
 
 
-class CascadedBiQuadFilter:
-    """
-    Drop-in replacement for BiQuadFilter using cascaded 2nd-order sections
-    (Butterworth pole placement) for steeper noise rejection (-24 dB/oct at order=4,
-    -36 dB/oct at order=6) while preserving a maximally flat passband at resonance=1.0.
-    """
-
-    _resonance_peak_offset = 1.0 - (1.0 / np.sqrt(2.0))
-
-    def __init__(self, sample_rate, cutoff_frequency, resonance=1.0, order=4):
-        if order % 2 != 0 or order < 2:
-            raise ValueError(
-                "Filter order must be an even integer >= 2 (e.g., 4 or 6)."
-            )
-
-        self.sample_rate = sample_rate
-        self.cutoff = cutoff_frequency
-        self.resonance = resonance
-        self.order = order
-        self.num_stages = order // 2
-
-        # Each stage stores [a0, a1, a2, a3, a4] (normalized b0, b1, b2, a1, a2)
-        self.stages = []
-        self.clear_buffer()
-
-        if cutoff_frequency >= 0.499 * sample_rate:
-            # True unity-gain bypass instead of muting when cutoff >= Nyquist guard
-            for _ in range(self.num_stages):
-                self.stages.append((1.0, 0.0, 0.0, 0.0, 0.0))
-            return
-
-        # Prevent negative/zero Q if resonance < 1.0
-        safe_res = max(resonance, 0.85)
-        user_q = safe_res - self._resonance_peak_offset / (1.0 + 6.0 * (safe_res - 1.0))
-        # Scale factor relative to a flat Butterworth Q (1/sqrt(2))
-        q_scale = user_q * np.sqrt(2.0)
-
-        w = 2.0 * np.pi * cutoff_frequency / sample_rate
-        cosw = np.cos(w)
-        sinw = np.sin(w)
-
-        for k in range(self.num_stages):
-            # Exact Butterworth pole Q for stage k of an Nth-order filter
-            pole_angle = np.pi * (2 * k + 1) / (2 * order)
-            stage_q = (1.0 / (2.0 * np.sin(pole_angle))) * q_scale
-
-            alpha = sinw / (2.0 * stage_q)
-
-            b0 = (1.0 - cosw) / 2.0
-            b1 = 1.0 - cosw
-            b2 = (1.0 - cosw) / 2.0
-            a0 = 1.0 + alpha
-            a1 = -2.0 * cosw
-            a2 = 1.0 - alpha
-
-            # Normalize by a0 for fast Direct Form I processing
-            self.stages.append((b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0))
-
-    def clear_buffer(self):
-        # State buffer per biquad stage: [x1, x2, y1, y2]
-        self.state = [[0.0, 0.0, 0.0, 0.0] for _ in range(self.num_stages)]
-
-    def set_unfiltered(self):
-        """Sets all biquad stages to unity-gain bypass and clears state buffers."""
-        self.stages = [(1.0, 0.0, 0.0, 0.0, 0.0) for _ in range(self.num_stages)]
-        self.clear_buffer()
-
-    def process(self, inp):
-        val = inp
-        for i in range(self.num_stages):
-            a0, a1, a2, a3, a4 = self.stages[i]
-            x1, x2, y1, y2 = self.state[i]
-
-            out = a0 * val + a1 * x1 + a2 * x2 - a3 * y1 - a4 * y2
-
-            self.state[i] = [val, x1, out, y1]
-            val = out
-
-        return val
-
-    def process_block(self, block):
-        """Filters `block` in place (a list or NumPy array of floats)."""
-        n = len(block)
-        for i in range(self.num_stages):
-            a0, a1, a2, a3, a4 = self.stages[i]
-            x1, x2, y1, y2 = self.state[i]
-
-            for t in range(n):
-                inp = block[t]
-                out = a0 * inp + a1 * x1 + a2 * x2 - a3 * y1 - a4 * y2
-
-                x2 = x1
-                x1 = inp
-                y2 = y1
-                y1 = out
-
-                block[t] = out
-
-            self.state[i] = [x1, x2, y1, y2]
-
-        return block
-
-
 class Sensors:
     """Wrapper da conexão UDP com o DLG."""
 
@@ -416,7 +313,7 @@ class Sensors:
         if sent != len(payload):
             raise RuntimeError("envio UDP incompleto")
         # self.flush()
-        self.filters: list[CascadedBiQuadFilter] = []
+        self.filters: list[BiQuadFilter] = []
         self.converters: list[Converter] = []
         self.types = []
         for i, cfg in enumerate(config.channel_configs):
@@ -441,7 +338,7 @@ class Sensors:
                 f"Failed to configure DataLogger CH-{i}, Config was truncated."
             )
             self.types.append(cfg.t_sensor)
-            filter = CascadedBiQuadFilter(self.rate_hz, cfg.cutoff_freq, cfg.resonance)
+            filter = BiQuadFilter(self.rate_hz, cfg.cutoff_freq, cfg.resonance)
             filter.set_unfiltered()
             self.filters.append(filter)
             converter = Converter(cfg.offset, cfg.gain)
@@ -590,7 +487,7 @@ class Sensors:
         new_cutoff = 25
         print(f"Channel {idx} cutoff set to {new_cutoff} Hz")
         # new_filter = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
-        new_filter = CascadedBiQuadFilter(self.rate_hz, new_cutoff, 1.0)
+        new_filter = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
         self.filters[idx] = new_filter
 
     def calibrate_filter(
@@ -632,7 +529,7 @@ class Sensors:
         if len(raw_values) < 8:
             # Fallback if packet capture timed out with insufficient data
             new_cutoff = self.rate_hz / 10.0
-            self.filters[idx] = CascadedBiQuadFilter(self.rate_hz, new_cutoff, 1.0)
+            self.filters[idx] = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
             return new_cutoff
 
         signal_data = np.array(raw_values[:n_samples], dtype=float)
@@ -684,7 +581,7 @@ class Sensors:
         print(
             f"Channel {idx}: lowest noise peak at {lowest_noise_freq} Hz -> cutoff set to {new_cutoff:.2f} Hz"
         )
-        self.filters[idx] = CascadedBiQuadFilter(self.rate_hz, new_cutoff, 1.0)
+        self.filters[idx] = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
 
     def start(self):
         # self.flush()
@@ -748,7 +645,8 @@ class Sensors:
         while True:
             try:
                 return self.read_unchecked()
-            except _:
+            except Exception as e:
+                print(f"Reading exception :{e}")
                 pass
 
     def read_unchecked(self) -> np.ndarray:

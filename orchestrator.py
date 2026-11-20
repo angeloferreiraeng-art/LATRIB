@@ -47,25 +47,18 @@ class Orchestrator:
 
     state: State = State.INIT
 
-    def __init__(self, config: dict[str, str] | None) -> None:
+    def __init__(self, config: dict[str, str] | None = None) -> None:
         self.state = State.INIT
         self.channel_idx: int = 0
         self.read_list: list[float] = []
         self.ref_list: list[float] = []
-        try:
-            s_config = (
-                SensorsConfig() if config is None else SensorsConfig.from_config(config)
-            )
-            self.sensors: Sensors = Sensors(s_config)
-            m_config = (
-                MotorConfig() if config is None else MotorConfig.from_config(config)
-            )
-            self.motor: Motor = Motor(m_config)
-            # self.motor.stop()
-        except Exception as e:
-            print("::::Orchestrator launch failed!:::::")
-            print(e)
-            self.eval_state(init_ok=False)
+        s_config = (
+            SensorsConfig() if config is None else SensorsConfig.from_config(config)
+        )
+        self.sensors: Sensors = Sensors(s_config)
+        m_config = MotorConfig() if config is None else MotorConfig.from_config(config)
+        self.motor: Motor = Motor(m_config)
+
         self.state = State.READY
 
     def eval_state(
@@ -119,24 +112,28 @@ class Orchestrator:
             print("SYSTEM NOT IN CALIBRATION MODE, IGNORING.")
 
     def commit_calibration(self):
-        x = np.array(self.read_list, dtype=float)
-        y = np.array(self.ref_list, dtype=float)
-        assert len(x) == len(y), "listx and listy must have the same length"
-        assert len(x) >= 2, "At least 2 data points are required"
-        # Least-squares solution via closed-form formula
-        n = len(x)
-        sum_x = np.sum(x)
-        sum_y = np.sum(y)
-        sum_xy = np.sum(x * y)
-        sum_x2 = np.sum(x * x)
-        denominator = n * sum_x2 - sum_x**2
-        assert denominator != 0, "Cannot fit: all x values are identical"
-        a = (n * sum_xy - sum_x * sum_y) / denominator
-        b = (sum_y * sum_x2 - sum_x * sum_xy) / denominator
-        self.sensors.set_converter(self.channel_idx, a, b)
-        self.read_list = []
-        self.ref_list = []
-        self.state = State.READY
+        if self.state is State.CALIBRATING:
+            x = np.array(self.read_list, dtype=float)
+            y = np.array(self.ref_list, dtype=float)
+            print("POINTS::", x, y)
+            assert len(x) == len(y), "listx and listy must have the same length"
+            assert len(x) >= 2, "At least 2 data points are required"
+            # Least-squares solution via closed-form formula
+            n = len(x)
+            sum_x = np.sum(x)
+            sum_y = np.sum(y)
+            sum_xy = np.sum(x * y)
+            sum_x2 = np.sum(x * x)
+            denominator = n * sum_x2 - sum_x**2
+            assert denominator != 0, "Cannot fit: all x values are identical"
+            a = (n * sum_xy - sum_x * sum_y) / denominator
+            b = (sum_y * sum_x2 - sum_x * sum_xy) / denominator
+            self.sensors.set_converter(self.channel_idx, a, b)
+            self.read_list.clear()
+            self.ref_list.clear()
+            self.state = State.READY
+        else:
+            print("Not in calibration mode, ignoring.")
 
     def commit_profile(self):
         self.motor.set_vel_profile()
