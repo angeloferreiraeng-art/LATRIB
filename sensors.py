@@ -83,6 +83,8 @@ class ChannelConfig:
     offset: float = 0.0
     cutoff_freq: float = 0.1
     resonance: float = 0.7071
+    ident: str = "UNDEFINED"
+    enable: bool = False
     t_sensor: int = (
         4  # 0 tensão, 1 corrente, 2 ponte completa, 3 1/4, 4 1/2 ponte, 5 ICP...
     )
@@ -101,6 +103,8 @@ class ChannelConfig:
             offset=0.0,
             cutoff_freq=0.1,
             resonance=0.7071,
+            ident="CÉLULA DE CARGA",
+            enable=True,
             t_sensor=(
                 4  # 0 tensão, 1 corrente, 2 ponte completa, 3 1/4, 4 1/2 ponte, 5 ICP...
             ),
@@ -120,6 +124,8 @@ class ChannelConfig:
             offset=0.0,
             cutoff_freq=0.1,
             resonance=0.7071,
+            ident="ENCODER",
+            enable=True,
             t_sensor=(
                 1  # 0 tensão, 1 corrente, 2 ponte completa, 3 1/4, 4 1/2 ponte, 5 ICP...
             ),
@@ -167,8 +173,16 @@ class SensorsConfig:
             ch_resonance = float(src[f"SENSORS_CHANNEL{i}_RESONANCE"])
             ch_gain = float(src[f"SENSORS_CHANNEL{i}_GAIN"])
             ch_offset = float(src[f"SENSORS_CHANNEL{i}_OFFSET"])
+            ch_ident = src[f"SENSORS_CHANNEL{i}_IDENT"]
+            ch_enable = bool(src[f"SENSORS_CHANNEL{i}_ENABLE"])
             conf = ChannelConfig(
-                ch_gain, ch_offset, ch_cutoff, ch_resonance, t_sensor=ch_type
+                gain=ch_gain,
+                offset=ch_offset,
+                cutoff_freq=ch_cutoff,
+                resonance=ch_resonance,
+                t_sensor=ch_type,
+                ident=ch_ident,
+                enable=ch_enable,
             )
             ch_confs.append(conf)
         return cls(
@@ -315,10 +329,11 @@ class Sensors:
         # self.flush()
         self.filters: list[BiQuadFilter] = []
         self.converters: list[Converter] = []
-        self.types = []
+        self.enable_masks: list[bool] = []
+        self.cal_dates: list[bool] = []
+        self.idents: list[str] = []
+        self.types: list[int] = []
         for i, cfg in enumerate(config.channel_configs):
-            # print(i,cfg)
-            # cfg = config.channel_configs[i]
             payload = _SET_CH.pack(
                 OP_SETCHCFG,
                 0,
@@ -338,6 +353,8 @@ class Sensors:
                 f"Failed to configure DataLogger CH-{i}, Config was truncated."
             )
             self.types.append(cfg.t_sensor)
+            self.enable_masks.append(cfg.enable)
+            self.idents.append(cfg.ident)
             filter = BiQuadFilter(self.rate_hz, cfg.cutoff_freq, cfg.resonance)
             filter.set_unfiltered()
             self.filters.append(filter)
@@ -676,13 +693,6 @@ class Sensors:
 
     def register_configs(self, dst):
         """Pushes the current configs to the output table for calibration record."""
-        for i in range(N_CHANNELS):
-            dst[f"SENSORS_CHANNEL{i}_TYPE"] = str(self.types[i])
-            dst[f"SENSORS_CHANNEL{i}_CUTOFF"] = str(self.filters[i].cutoff)
-            dst[f"SENSORS_CHANNEL{i}_RESONANCE"] = str(self.filters[i].resonance)
-            dst[f"SENSORS_CHANNEL{i}_GAIN"] = str(self.converters[i].gain)
-            dst[f"SENSORS_CHANNEL{i}_OFFSET"] = str(self.converters[i].offset)
-
         dst["SENSORS_IP"] = str(self.address[0])
         dst["SENSORS_PORT"] = str(self.address[1])
         dst["SENSORS_BIND_IP"] = str(self.bind_point[0])
@@ -690,3 +700,11 @@ class Sensors:
         dst["SENSORS_RATE"] = str(self.rate_hz)
         dst["SENSORS_FRAME_PER_PACKET"] = str(self.samples_per_pack)
         dst["SENSORS_TIMEOUT"] = str(self.timeout)
+        for i in range(N_CHANNELS):
+            dst[f"SENSORS_CHANNEL{i}_TYPE"] = str(self.types[i])
+            dst[f"SENSORS_CHANNEL{i}_CUTOFF"] = str(self.filters[i].cutoff)
+            dst[f"SENSORS_CHANNEL{i}_RESONANCE"] = str(self.filters[i].resonance)
+            dst[f"SENSORS_CHANNEL{i}_GAIN"] = str(self.converters[i].gain)
+            dst[f"SENSORS_CHANNEL{i}_OFFSET"] = str(self.converters[i].offset)
+            dst[f"SENSORS_CHANNEL{i}_IDENT"] = str(self.idents[i])
+            dst[f"SENSORS_CHANNEL{i}_ENABLE"] = str(self.enable_masks[i])

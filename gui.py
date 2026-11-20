@@ -43,6 +43,10 @@ class GUI:
         tk.Button(bar, text="Start", command=self.start).pack(side="left", padx=2)
         tk.Button(bar, text="Stop", command=self.stop).pack(side="left", padx=2)
 
+        tk.Button(bar, text="Velocity mode", command=self.velocity_mode).pack(
+            side="left", padx=2
+        )
+
         # ----- plot -----
         fig = Figure(figsize=(7, 3.5), dpi=100)
         self.ax = fig.add_subplot(111)
@@ -111,6 +115,9 @@ class GUI:
     def stop(self):
         self.orch.stop()
         self._running = False
+
+    def velocity_mode(self):
+        self.orch.commit_profile()
 
     def redraw(self):
         try:

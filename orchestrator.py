@@ -52,13 +52,20 @@ class Orchestrator:
         self.channel_idx: int = 0
         self.read_list: list[float] = []
         self.ref_list: list[float] = []
-        s_config = (
-            SensorsConfig() if config is None else SensorsConfig.from_config(config)
-        )
-        self.sensors: Sensors = Sensors(s_config)
-        m_config = MotorConfig() if config is None else MotorConfig.from_config(config)
-        self.motor: Motor = Motor(m_config)
 
+        # config setup
+        if config is None:
+            last_calibre = "Not Calibrated"
+            s_config = SensorsConfig()
+            m_config = MotorConfig()
+        else:
+            last_calibre = config["CALIBRATION_DATE"]
+            s_config = SensorsConfig.from_config(config)
+            m_config = MotorConfig.from_config(config)
+
+        self.sensors: Sensors = Sensors(s_config)
+        self.motor: Motor = Motor(m_config)
+        self.last_calibre = last_calibre
         self.state = State.READY
 
     def eval_state(
@@ -151,9 +158,9 @@ class Orchestrator:
         self.eval_state(stop_on=True)
 
     def start(self):
-        if self.state == State.READY:
+        if self.state == State.READY or self.state == State.STOP:
             self.sensors.start()
-            # self.motor.start()
+            self.motor.start()
             self.state = State.RUNNING
         else:
             print(f"Trying to start on state {self.state.name}, ignoring.")
@@ -165,7 +172,6 @@ class Orchestrator:
         """Outputs buffered data to the given file. May fail."""
         if self.state == State.RUNNING:
             frame = self.sensors.read()
-            print("reading")
             return frame[channel]
         else:
             print("Sensors are not activated!")
