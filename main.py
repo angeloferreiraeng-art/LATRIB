@@ -6,10 +6,10 @@ import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 
 from simulator import HardwareSim
-from orchestrator import Orchestrator
 
 with HardwareSim() as rig:
     # rig.start()
+    rig.set_channel(1, 500, 10)
     orc = Orchestrator(rig.make_config())
     orc.start()
     print("state:", orc.check_state())
@@ -42,36 +42,47 @@ with HardwareSim() as rig:
 
     start_time = time.perf_counter()
 
+    flags = [False, False]
+
+    def cal():
+        WAIT = 0.1
+        delta = time.perf_counter() - start_time
+        if delta > 3 and delta < 4 and not flags[0]:
+            flags[0], flags[1] = True, False
+            rig.set_channel(1, 300, 1)
+            # orc.reset()
+            # time.sleep(WAIT)
+        if delta > 4 and delta < 5 and not flags[1]:
+            flags[0], flags[1] = False, True
+            orc.ref_point(0)
+            # time.sleep(WAIT)
+        if delta > 5 and delta < 6 and not flags[0]:
+            flags[0], flags[1] = True, False
+            rig.set_channel(1, 600, 1)
+            # orc.reset()
+            # time.sleep(WAIT)
+        if delta > 7 and delta < 8 and not flags[1]:
+            flags[0], flags[1] = False, True
+            orc.ref_point(10)
+            # time.sleep(WAIT)
+        if delta > 8 and delta < 9 and not flags[0]:
+            flags[0], flags[1] = True, False
+            orc.commit_calibration()
+            # time.sleep(WAIT)
+        if delta > 10 and not flags[1]:
+            flags[0], flags[1] = False, True
+            rig.set_channel(1, 450, 10)
+            orc.reset()
+
     def update(_frame):
         val = eval_value()
         data.append(val)
         line.set_ydata(data)
-        WAIT = 0.1
         # Auto-scale Y axis smoothly with a small margin
         ymin, ymax = min(data), max(data)
         margin = max((ymax - ymin) * 0.1, 0.1)
         ax.set_ylim(ymin - margin, ymax + margin)
-        calibrated = False
-        delta = time.perf_counter() - start_time
-        if delta > 3 and delta < 4 and not calibrated:
-            rig.set_channel(1, 300, 1)
-            time.sleep(WAIT)
-        if delta > 4 and delta < 5 and not calibrated:
-            # orc.ref_point(0)
-            time.sleep(WAIT)
-        if delta > 5 and delta < 6 and not calibrated:
-            rig.set_channel(1, 600, 1)
-            time.sleep(WAIT)
-        if delta > 7 and delta < 8 and not calibrated:
-            # orc.ref_point(10)
-            time.sleep(WAIT)
-        if delta > 8 and delta < 9 and not calibrated:
-            calibrated = True
-            # orc.commit_calibration()
-            time.sleep(WAIT)
-        if delta > 10:
-            rig.set_channel(1, 450, 10)
-
+        cal()
         return (line,)
 
     ani = animation.FuncAnimation(

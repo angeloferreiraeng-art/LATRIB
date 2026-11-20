@@ -833,6 +833,7 @@ class HardwareSim:
     def set_channel(self, ch: int, value: float, noise: float | None = None) -> None:
         """Make channel `ch` output raw counts around `value`, e.g. rig.set_channel(1, 5000)
         to simulate a sensor reading a known reference.  Takes effect immediately."""
+        print(f"SETTING CHANNEL TO {value}")
         self.model.set_channel(ch, value, noise)
 
     def clear_channel(self, ch: int | None = None) -> None:

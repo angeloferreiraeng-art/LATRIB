@@ -509,6 +509,7 @@ class Sensors:
         Returns:
             The newly calculated and applied cutoff frequency in Hz.
         """
+        self.flush()
         raw_values = []
         start_time = time.time()
 
@@ -625,11 +626,6 @@ class Sensors:
         # print(out_data)
         return out_data
 
-    def read_channel(self, idx: int):
-        assert idx <= N_CHANNELS, "Trying to read channel out of bounds"
-        frame = self.read()
-        return frame[idx]
-
     def read(self) -> np.ndarray:
         """Reads the next data frame in a nice manner. Filters and adjust value to calibrated units."""
         raw = self.read_raw()
@@ -664,7 +660,19 @@ class Sensors:
         for i in range(b_size):
             frame = self.read_raw()
             out[:, i] = frame
-        return np.mean(out, axis=0)
+        mean = np.mean(out, axis=1)
+        return mean
+
+    def flush(self):
+        """Discard every datagram currently queued in the socket."""
+        self.sock.setblocking(False)
+        try:
+            while True:
+                self.sock.recvfrom(RECV_BUFFER)
+        except (BlockingIOError, ConnectionResetError):
+            pass
+        finally:
+            self.sock.settimeout(self.timeout)
 
     def register_configs(self, dst):
         """Pushes the current configs to the output table for calibration record."""

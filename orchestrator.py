@@ -103,6 +103,7 @@ class Orchestrator:
     def ref_point(self, value: float):
         if self.state == State.CALIBRATING:
             print("CHANNEL", self.channel_idx)
+            self.sensors.flush()
             frame = self.sensors.read_buffered()
             read = frame[self.channel_idx]
             print(value, read)
@@ -112,28 +113,25 @@ class Orchestrator:
             print("SYSTEM NOT IN CALIBRATION MODE, IGNORING.")
 
     def commit_calibration(self):
-        if self.state is State.CALIBRATING:
-            x = np.array(self.read_list, dtype=float)
-            y = np.array(self.ref_list, dtype=float)
-            print("POINTS::", x, y)
-            assert len(x) == len(y), "listx and listy must have the same length"
-            assert len(x) >= 2, "At least 2 data points are required"
-            # Least-squares solution via closed-form formula
-            n = len(x)
-            sum_x = np.sum(x)
-            sum_y = np.sum(y)
-            sum_xy = np.sum(x * y)
-            sum_x2 = np.sum(x * x)
-            denominator = n * sum_x2 - sum_x**2
-            assert denominator != 0, "Cannot fit: all x values are identical"
-            a = (n * sum_xy - sum_x * sum_y) / denominator
-            b = (sum_y * sum_x2 - sum_x * sum_xy) / denominator
-            self.sensors.set_converter(self.channel_idx, a, b)
-            self.read_list.clear()
-            self.ref_list.clear()
-            self.state = State.READY
-        else:
+        if self.state is not State.CALIBRATING:
             print("Not in calibration mode, ignoring.")
+            return
+
+        x = np.asarray(self.read_list, dtype=float)
+        y = np.asarray(self.ref_list, dtype=float)
+        print("POINTS::", x, y)
+
+        assert len(x) == len(y), "listx and listy must have the same length"
+        assert len(x) >= 2, "At least 2 data points are required"
+        assert np.ptp(x) > 0, "Cannot fit: all x values are identical"
+
+        # Least-squares fit: y = a*x + b
+        a, b = np.polyfit(x, y, 1)
+
+        self.sensors.set_converter(self.channel_idx, a, b)
+        self.read_list.clear()
+        self.ref_list.clear()
+        self.state = State.READY
 
     def commit_profile(self):
         self.motor.set_vel_profile()
@@ -159,7 +157,14 @@ class Orchestrator:
         else:
             print(f"Trying to start on state {self.state.name}, ignoring.")
 
+    def reset(self):
+        self.sensors.flush()
+
     def read_channel(self, channel) -> float:
         """Outputs buffered data to the given file. May fail."""
         frame = self.sensors.read()
+        return frame[channel]
+
+    def read_channel_raw(self, channel) -> float:
+        frame = self.sensors.read_raw()
         return frame[channel]
