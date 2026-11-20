@@ -65,7 +65,6 @@ class Orchestrator:
 
         self.sensors: Sensors = Sensors(s_config)
         self.motor: Motor = Motor(m_config)
-        self.last_calibre = last_calibre
         self.state = State.READY
 
     def eval_state(

@@ -47,7 +47,7 @@ def _u16(v: int) -> int:
     return int(v) & 0xFFFF
 
 
-def parse_pack(
+def parse_opt(
     bytes: bytes, n_channels: int
 ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
     """Returns a list of channel values (each channel has a block of raw data)"""
@@ -55,7 +55,7 @@ def parse_pack(
         len(bytes) < DATA_HEADER_SIZE
         or struct.unpack_from("<H", bytes)[0] != OP_ACQDATA
     ):
-        return np.array([[0]] * N_CHANNELS)
+        return np.full((n_channels, 1), np.nan)
     h = _DATA_HDR.unpack_from(bytes)
     frame_no, ts, freq, n_bursts, n_sig = h[2], h[3], h[4], h[5], h[6]
     stride = n_channels
@@ -64,7 +64,36 @@ def parse_pack(
     if n_bursts > 0:
         bursts = min(bursts, n_bursts)
     if bursts <= 0:
-        return np.array([[0]] * N_CHANNELS)
+        return np.full((n_channels, 1), np.nan)
+
+    # Read all int16 values at once
+    flat = np.frombuffer(
+        bytes, dtype="<i2", count=bursts * stride, offset=DATA_HEADER_SIZE
+    )
+    # Reshape to (bursts, stride) and transpose to (n_channels, bursts)
+    data = flat.reshape(bursts, stride).T
+    assert data.shape[0] == n_channels, "ERROR: Transposed parsed frame has wrong size"
+    return data
+
+
+def parse_pack(
+    bytes: bytes, n_channels: int
+) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
+    """Returns a list of channel values (each channel has a block of raw data)"""
+    if (
+        len(bytes) < DATA_HEADER_SIZE
+        or struct.unpack_from("<H", bytes)[0] != OP_ACQDATA
+    ):
+        return np.array([[np.nan]] * n_channels)
+    h = _DATA_HDR.unpack_from(bytes)
+    frame_no, ts, freq, n_bursts, n_sig = h[2], h[3], h[4], h[5], h[6]
+    stride = n_channels
+    avail = (len(bytes) - DATA_HEADER_SIZE) // 2
+    bursts = avail // stride
+    if n_bursts > 0:
+        bursts = min(bursts, n_bursts)
+    if bursts <= 0:
+        return np.array([[np.nan]] * n_channels)
     flat = list(struct.unpack_from("<%dh" % (bursts * stride), bytes, DATA_HEADER_SIZE))
     data = [flat[b * stride : (b + 1) * stride] for b in range(bursts)]
     transposed = [list(row) for row in zip(*data)]
@@ -370,10 +399,12 @@ class Sensors:
         self.stop()
         self.sock.close()
 
-    def acq_setup_new(self, rate_hz: float, n_bursts: int = 1) -> float:
+    def acq_setup(
+        self, rate_hz: float, n_bursts: int = 1, n_channels: int = 8
+    ) -> float:
         """Configura a aquisição. Retorna a frequência real informada pelo aparelho."""
-        icm = [0] * N_MAX_CHAN
-        for i in range(N_CHANNELS):
+        icm = [0] * n_channels
+        for i in range(n_channels):
             icm[i] = _i16(i)
         payload = _ACQ_SETUP.pack(
             OP_ACQSETUP,
@@ -384,60 +415,7 @@ class Sensors:
             0,
             0,
             _i16(n_bursts),
-            _i16(N_CHANNELS),
-            *icm,
-        )
-        sent = self.sock.sendto(payload, self.address)
-        assert sent == len(payload), (
-            "Failed to send full setup payload to datalogger connection."
-        )
-        # Reads until the ACQSETUP_R shows up, skipping stray replies
-        # (e.g. SETCHCFG_R from the channel configs) and leftover ACQDATA.
-        deadline = time.time() + self.timeout
-        while True:
-            if time.time() > deadline:
-                raise TimeoutError("sem resposta ao AcqSetup")
-            try:
-                resp, _ = self.sock.recvfrom(RECV_BUFFER)
-            except socket.timeout:
-                raise TimeoutError("sem resposta ao AcqSetup") from None
-            except ConnectionResetError:  # Windows: ICMP "port unreachable"
-                continue
-            if len(resp) < _HDR.size:
-                continue
-            code = struct.unpack_from("<H", resp)[0]
-            if code == OP_SETCHCFG_R and len(resp) >= _RESP.size:
-                err = _RESP.unpack_from(resp)[2]
-                if err != 0:
-                    raise RuntimeError(f"SetChConfig falhou (erro {err})")
-                continue
-            if code != OP_ACQSETUP_R:
-                continue
-            assert len(resp) == _ACQ_SETUP_R.size, (
-                f"resposta AcqSetup truncada, expect :{_ACQ_SETUP_R.size}, got {len(resp)}"
-            )
-            _, _, err, real = _ACQ_SETUP_R.unpack_from(resp)
-            if err != 0:
-                raise RuntimeError(f"AcqSetup falhou (erro {err})")
-            if abs(real - rate_hz) > 1e-6 * max(rate_hz, 1.0):
-                print(f"frequência pedida {rate_hz:.3f} Hz, real {real:.3f} Hz")
-            return real
-
-    def acq_setup(self, rate_hz: float, n_bursts: int = 1) -> float:
-        """Configura a aquisição. Retorna a frequência real informada pelo aparelho."""
-        icm = [0] * N_CHANNELS
-        for i in range(N_CHANNELS):
-            icm[i] = _i16(i)
-        payload = _ACQ_SETUP.pack(
-            OP_ACQSETUP,
-            0,
-            float(rate_hz),
-            0,
-            0,
-            0,
-            0,
-            _i16(n_bursts),
-            _i16(N_CHANNELS),
+            _i16(n_channels),
             *icm,
         )
         self.sock.sendto(payload, self.address)
@@ -448,64 +426,6 @@ class Sensors:
                 print("frequência pedida %.3f Hz, real %.3f Hz", rate_hz, real)
             return real
         return float(rate_hz)
-
-    def calibrate_filter_old(self, idx: int, n_samples: int = 512):
-        """Automatically listens to the current signal on channel `channel_idx`,
-        analyzes noise and main frequencies via FFT, and updates the BiQuadFilter
-        cutoff frequency to filter out the noise and make the signal constant.
-
-        Args:
-            channel_idx: Index of the channel to calibrate.
-            n_samples: Number of raw samples to capture for noise analysis.
-
-        Returns:
-            The newly calculated and applied cutoff frequency in Hz.
-        """
-        raw_values = []
-        start_time = time.time()
-        # 1. Listen to the current signal stream to capture noise
-        while len(raw_values) < n_samples:
-            if time.time() - start_time > self.timeout * max(1, n_samples // 50):
-                break
-            try:
-                raw_packet, _ = self.sock.recvfrom(RECV_BUFFER)
-                frames = parse_pack(raw_packet, N_CHANNELS)
-                if len(frames) > idx:
-                    block = frames[idx]
-                    if block:
-                        raw_values.extend(block)
-            except socket.timeout:
-                continue
-
-        signal_data = np.array(raw_values, dtype=float)
-
-        # 2. Analyze frequency spectrum using FFT (ignoring DC offset at index 0)
-        detrended = signal_data - np.mean(signal_data)
-        fft_vals = np.abs(np.fft.rfft(detrended))
-        freqs = np.fft.rfftfreq(len(signal_data), d=1.0 / self.rate_hz)
-
-        if len(freqs) > 1:
-            peak_idx = np.argmax(fft_vals[1:]) + 1
-            dominant_noise_freq = freqs[peak_idx]
-            print(dominant_noise_freq)
-        else:
-            dominant_noise_freq = self.rate_hz / 4.0
-
-        # 3. Determine optimal cutoff frequency below the dominant noise/main frequency
-        # If mains hum or noise is detected, set cutoff below it to flatten the signal
-        if dominant_noise_freq > 2.0:
-            new_cutoff = dominant_noise_freq  # * 0.8
-        else:
-            new_cutoff = self.rate_hz / 10.0  # Fallback safety margin
-
-        # Bound check according to BiQuadFilter constraints (< 0.499 * sample_rate)
-        max_allowed_cutoff = 0.499 * self.rate_hz
-        new_cutoff = max(0.5, min(new_cutoff, max_allowed_cutoff))
-        new_cutoff = 25
-        print(f"Channel {idx} cutoff set to {new_cutoff} Hz")
-        # new_filter = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
-        new_filter = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
-        self.filters[idx] = new_filter
 
     def calibrate_filter(
         self,
@@ -622,26 +542,22 @@ class Sensors:
         new_converter = Converter(offset, gain)
         self.converters[idx] = new_converter
 
-    def read_old(self) -> np.ndarray:
+    def set_identifier(self, idx: int, ident: str):
+        self.idents[idx] = ident
+
+    def set_enable(self, idx: int, value: bool):
+        self.enable_masks[idx] = value
+
+    def read_actives(self) -> np.ndarray:
         """Reads the next data frame in a nice manner. Filters and adjust value to calibrated units."""
-        # print("reading")
-        try:
-            raw, _ = self.sock.recvfrom(RECV_BUFFER)
-            blocks = parse_pack(raw, N_CHANNELS)
-            out_data = np.zeros(N_CHANNELS)
-            for i in range(N_CHANNELS):
-                b = float(np.mean(blocks[i]))
-                b = self.filters[i].process(b)
-                b = self.converters[i].process(b)
-                out_data[i] = b
-        except socket.timeout:
-            print("timedout")
-            out_data = np.zeros(N_CHANNELS)
-        except ConnectionResetError:  # Windows: ICMP "port unreachable"
-            print("port unreachable")
-            out_data = np.zeros(N_CHANNELS)
-        # print(out_data)
-        return out_data
+        raw = self.read_raw()
+        out_data = []
+        for r, f, c, mask in zip(raw, self.filters, self.converters, self.enable_masks):
+            if mask:
+                b = f.process(r)
+                b = c.process(b)
+                out_data.append(b)
+        return np.array(out_data)
 
     def read(self) -> np.ndarray:
         """Reads the next data frame in a nice manner. Filters and adjust value to calibrated units."""
