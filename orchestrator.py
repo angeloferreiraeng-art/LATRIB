@@ -13,6 +13,8 @@ from enum import Enum
 import math
 from copy import copy
 
+N_CHANNELS = 8
+
 
 class State(Enum):
     INIT = 0
@@ -50,6 +52,9 @@ class Orchestrator:
 
     def __init__(self, config: dict[str, str] | None = None) -> None:
         self.state = State.INIT
+        self.enables = [True] + 7 * [False]  # [False for i in range(N_CHANNELS)]
+        self.ch_names = ["UNDEFINED" for i in range(N_CHANNELS)]
+
         self.channel_idx: int = 0
         self.read_list: list[float] = []
         self.ref_list: list[float] = []
@@ -88,8 +93,8 @@ class Orchestrator:
                 if stop_on and not start_on:
                     self.state = State.STOP
 
-    def check_state(self) -> str:
-        return self.state.name
+    def check_state(self) -> State:
+        return self.state
 
     def start_calibration(self, channel: int):
         self.state = State.CALIBRATING
@@ -171,6 +176,18 @@ class Orchestrator:
 
     def reset(self):
         self.sensors.flush()
+
+    def add_channel(self, idx: int, name: str):
+        assert idx <= N_CHANNELS, "CHANNEL INDEX TOO BIG"
+        self.enables[idx] = True
+        self.ch_names[idx] = name
+
+    def channels(self):
+        out = []
+        for ch_e, ch_n in zip(self.enables, self.ch_names):
+            if ch_e:
+                out.append(ch_n)
+        return out
 
     def read_channel(self, channel) -> float:
         """Outputs buffered data to the given file. May fail."""
