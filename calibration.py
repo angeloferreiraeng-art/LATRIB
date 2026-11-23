@@ -1,19 +1,16 @@
 """Routine that calibrates the orchestrator and saves the config to a file"""
 
 import time
-from orchestrator import Orchestrator,parse_config
+from orchestrator import Orchestrator, parse_config
 import numpy as np
 from collections import deque
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 
-CONFIG_FILE="config.txt"
-#cfg=parse_config(CONFIG_FILE)
-cfg=None
+CONFIG_FILE = "config.txt"
+# cfg=parse_config(CONFIG_FILE)
+cfg = None
 orc = Orchestrator(cfg)
-
-
-
 
 
 print("CALLIBRATION CH-3:")

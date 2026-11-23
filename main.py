@@ -10,11 +10,12 @@ from simulator import HardwareSim
 
 def run(orc):
     orc.commit_profile()
-    orc.start()
+    # orc.start()
     print("state:", orc.check_state())
 
     # rig.set_channel(
     def eval_value():
+        orc.reset()
         read_val = orc.read_channel(3)
         # read_val=np.average(buff)
         # amplitude=np.max(buff)-np.min(buff)
@@ -45,9 +46,12 @@ def run(orc):
     def cal():
         WAIT = 0.1
         delta = time.perf_counter() - start_time
+        if delta < 3 and not flags[1]:
+            flags[0], flags[1] = False, True
+            orc.start_calibration(3)
         if delta > 3 and delta < 4 and not flags[0]:
             flags[0], flags[1] = True, False
-            rig.set_channel(1, 300, 1)
+            rig.set_channel(3, 300, 1)
             # orc.reset()
             # time.sleep(WAIT)
         if delta > 4 and delta < 5 and not flags[1]:
@@ -56,7 +60,7 @@ def run(orc):
             # time.sleep(WAIT)
         if delta > 5 and delta < 6 and not flags[0]:
             flags[0], flags[1] = True, False
-            rig.set_channel(1, 600, 1)
+            rig.set_channel(3, 600, 1)
             # orc.reset()
             # time.sleep(WAIT)
         if delta > 7 and delta < 8 and not flags[1]:
@@ -66,14 +70,12 @@ def run(orc):
         if delta > 8 and delta < 9 and not flags[0]:
             flags[0], flags[1] = True, False
             orc.commit_calibration()
-            # time.sleep(WAIT)
-        if delta > 10 and not flags[1]:
-            flags[0], flags[1] = False, True
-            rig.set_channel(1, 450, 10)
-            orc.reset()
+            orc.dump_config("config.txt")
+            # orc.start()
 
     def update(_frame):
         val = eval_value()
+        print(val)
         data.append(val)
         line.set_ydata(data)
         # Auto-scale Y axis smoothly with a small margin
@@ -81,6 +83,9 @@ def run(orc):
         margin = max((ymax - ymin) * 0.1, 0.1)
         ax.set_ylim(ymin - margin, ymax + margin)
         # cal()
+        t = time.perf_counter()
+        if t - start_time > 10:
+            orc.motor.stop()
         return (line,)
 
     ani = animation.FuncAnimation(
@@ -90,7 +95,7 @@ def run(orc):
         blit=False,  # Set True if Y-axis limits are fixed for even higher FPS
         cache_frame_data=False,
     )
-
+    orc.start_raw()
     plt.tight_layout()
     plt.show()
     orc.stop()

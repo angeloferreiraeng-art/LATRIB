@@ -1,26 +1,3 @@
-#!/usr/bin/env python3
-"""hwsim.py - software stand-in for the hardware used by orchestrator/motor/sensors.
-
-Two simulated devices, plus a tiny helper rig that wires them together:
-
-  * ServoDriveSim + ModbusRtuServer  - a Modbus-RTU slave (servo drive) reachable over a serial
-    port.  On Linux/macOS the "serial port" is a pseudo-terminal (no extra software needed).
-    On Windows pair two virtual COM ports (e.g. com0com: COM5 <-> COM6) and give the simulator
-    one end (--modbus-port COM6) while your code opens the other (COM5).
-  * DLGSimulator - the UDP datalogger (DLG0221/DLG4K protocol used in sensors.py): answers
-    SETCHCFG / ACQSETUP / ACQSTART / ACQSTOP and streams ACQDATA packets at the requested rate.
-
-Standalone:   python hwsim.py                      # prints the port to point MOTOR_PORT at
-              python hwsim.py --modbus-port COM6   # Windows with a com0com pair
-
-IMPORTANT - what is real and what is inferred
-  * Wire formats (Modbus RTU framing/CRC, the DLG struct layouts) follow the code in sensors.py
-    and the Modbus spec, so protocol-level mistakes in your code get caught.
-  * The *meaning* of drive registers is inferred from the constants/comments in motor.py (no
-    drive manual was available).  Treat motion behaviour as a plausible model, not ground truth.
-    Assumptions are collected in ServoDriveSim's docstring.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -188,6 +165,9 @@ class ServoDriveSim:
         self.regs[R_ANALOG_SPEED_10V] = 3000
         self.running = False
         self.angle_rev = 0.0
+        self.profile_rev = (
+            0.0  # displacement (turns) integrated from the multi-speed table
+        )
         self.speed_rpm = 0.0
         self.analog_v = 0.0  # volts on the analog speed input, settable by tests
         self.warnings: list[str] = []
@@ -249,6 +229,7 @@ class ServoDriveSim:
         with self._lock:
             self._advance()
             return dict(running=self.running, angle_rev=self.angle_rev,
+                        profile_rev=self.profile_rev,
                         speed_rpm=self.speed_rpm, mode=self.regs[R_CTRL_MODE])  # fmt: skip
 
     # -- motion ------------------------------------------------------------
@@ -256,6 +237,7 @@ class ServoDriveSim:
         new = (self.regs[R_VDI_LEVEL] & 0b11) == 0b11
         if new and not self.running:
             self._seg, self._seg_t = 0, 0.0
+            self.profile_rev = 0.0  # channel 3 restarts from zero at each motor start
         if not new:
             self.speed_rpm = 0.0
         self.running = new
@@ -315,6 +297,7 @@ class ServoDriveSim:
                     rpm = math.copysign(self.max_rpm, rpm)
                 step = min(dt, max(0.0, dur - self._seg_t))
                 self.angle_rev += rpm / 60.0 * step
+                self.profile_rev += rpm / 60.0 * step
                 self.speed_rpm = rpm
                 self._seg_t += step
                 dt -= step
@@ -612,7 +595,10 @@ class SignalModel:
     """Raw int16 counts for the 8 channels.
 
     ch1 strain gauge: offset + counts_per_unit*load + mains hum + noise   (set `load`)
-    ch3 encoder:      follows the simulated drive shaft angle (+-10000 counts per turn)
+    ch3 encoder:      after motor start, the position obtained by integrating the looping
+                      speed/time table the drive received over Modbus (vel_ctrl_unchecked),
+                      20000 counts per turn, 0 at start (set encoder_source="shaft" for the
+                      old wrapped shaft-angle signal)
     ch0, ch2, ch4..7: constant 100*channel + noise  (distinct, so channel mix-ups are visible)
     """
 
@@ -622,6 +608,8 @@ class SignalModel:
         self.rng = np.random.default_rng(seed)
         self.mains_hz, self.noise, self.hum = mains_hz, noise_counts, hum_counts
         self.load = 0.0
+        self.encoder_source = "profile"  # "profile" or "shaft"
+        self.encoder_counts_per_rev = 20000.0
         self.strain_counts_per_unit = 100.0
         self.strain_offset = 250.0
         self.overrides: dict[
@@ -650,8 +638,13 @@ class SignalModel:
         out[1] = (self.strain_offset + self.strain_counts_per_unit * self.load
                   + self.hum * math.sin(2 * math.pi * self.mains_hz * t) + n[1])  # fmt: skip
         if self.drive is not None:
-            frac = self.drive.snapshot()["angle_rev"] % 1.0
-            out[3] = (frac - 0.5) * 20000.0 + n[3]
+            snap = self.drive.snapshot()
+            if self.encoder_source == "profile":
+                # position = integral of the looping velocity/time table written over
+                # Modbus (zero at motor start, held after stop, zero before first start)
+                out[3] = snap["profile_rev"] * self.encoder_counts_per_rev + n[3]
+            else:  # "shaft": wrapped absolute shaft angle (previous behaviour)
+                out[3] = (snap["angle_rev"] % 1.0 - 0.5) * 20000.0 + n[3]
         for ch, (value, sigma) in list(self.overrides.items()):
             out[ch] = value + self.rng.normal(0.0, sigma)
         return out

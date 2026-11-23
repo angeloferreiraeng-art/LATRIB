@@ -131,7 +131,7 @@ class Orchestrator:
 
         print(f"SETTED CH-{self.channel_idx} CURVE TO {a}x+{b}")
         self.sensors.set_converter(self.channel_idx, a, b)
-        print("VALUES:",a*x+b)
+        print("VALUES:", a * x + b)
         self.read_list.clear()
         self.ref_list.clear()
         self.sensors.stop()
@@ -155,14 +155,15 @@ class Orchestrator:
         self.eval_state(stop_on=True)
 
     def start(self) -> bool:
-        if self.state == State.READY or self.state == State.STOP:
+        if self.state == State.RUNNING or self.state == State.ERROR:
+            print(f"Trying to start on state {self.state.name}, ignoring.")
+            return False
+
+        else:
             self.sensors.start()
             self.motor.start()
             self.state = State.RUNNING
             return True
-        else:
-            print(f"Trying to start on state {self.state.name}, ignoring.")
-            return False
 
     def start_raw(self):
         self.sensors.start()
@@ -175,7 +176,7 @@ class Orchestrator:
         """Outputs buffered data to the given file. May fail."""
         if self.state == State.RUNNING or self.state == State.CALIBRATING:
             self.sensors.flush()
-            frame = self.sensors.read_buffered()
+            frame = self.sensors.read_nice()
             return frame[channel]
         else:
             print("Sensors are not activated!")

@@ -574,8 +574,8 @@ class Sensors:
             val_f = f.process(r)
             val_c = c.process(val_f)
             out_data.append(val_c)
-            if i == 3:
-                print(f"raw {r}, filtered {val_f}, converter {val_c}")
+        #   if i == 3:
+        #        print(f"raw {r}, filtered {val_f}, converter {val_c}")
 
         return np.array(out_data)
 
@@ -602,7 +602,6 @@ class Sensors:
         out = np.zeros((N_CHANNELS, b_size))
         for i in range(b_size):
             frame = self.read_raw()
-            print(frame[3])
             out[:, i] = frame
         mean = np.mean(out, axis=1)
         return mean
