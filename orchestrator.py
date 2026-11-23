@@ -17,10 +17,11 @@ from copy import copy
 class State(Enum):
     INIT = 0
     ERROR = -1
-    READY = 1
-    RUNNING = 2
-    CALIBRATING = 3
-    STOP = 4
+    IDLE = (1,)
+    READY = 2
+    RUNNING = 3
+    CALIBRATING = 4
+    STOP = 5
 
 
 def parse_config(path):
@@ -59,7 +60,7 @@ class Orchestrator:
         m_config = MotorConfig() if config is None else MotorConfig.from_config(config)
         self.motor: Motor = Motor(m_config)
 
-        self.state = State.READY
+        self.state = State.IDLE
 
     def eval_state(
         self,
@@ -132,10 +133,11 @@ class Orchestrator:
         self.read_list.clear()
         self.ref_list.clear()
         self.sensors.stop()
-        self.state = State.READY
+        self.state = State.IDLE
 
     def commit_profile(self):
         self.motor.set_vel_profile()
+        self.state = State.READY
 
     def dump_config(self, path: Path):
         cfg = {}
@@ -150,20 +152,22 @@ class Orchestrator:
         self.sensors.stop()
         self.eval_state(stop_on=True)
 
-    def start(self):
-        if self.state == State.READY:
+    def start(self) -> bool:
+        if self.state == State.READY or self.state == State.STOP:
             self.sensors.start()
-            # self.motor.start()
+            self.motor.start()
             self.state = State.RUNNING
+            return True
         else:
             print(f"Trying to start on state {self.state.name}, ignoring.")
+            return False
 
     def reset(self):
         self.sensors.flush()
 
     def read_channel(self, channel) -> float:
         """Outputs buffered data to the given file. May fail."""
-        if self.state == State.RUNNING:
+        if self.state == State.RUNNING or self.state == State.CALIBRATING:
             frame = self.sensors.read()
             print("reading")
             return frame[channel]

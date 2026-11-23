@@ -21,6 +21,14 @@ WINDOW_SIZE = 200  # points visible on the plot
 INTERVAL_MS = 33  # ~30 FPS
 CSV_TAIL_HZ = 50  # how often to poll the CSV (optional)
 
+TIMER_SECONDS = 30 * 60  # countdown duration: 30 min
+AUTO_STOP_AT_ZERO = False  # set True to stop the orchestrator when the timer hits 0
+
+
+def format_mmss(seconds):
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
 
 class GUI:
     def __init__(self, config):
@@ -42,6 +50,20 @@ class GUI:
 
         tk.Button(bar, text="Start", command=self.start).pack(side="left", padx=2)
         tk.Button(bar, text="Stop", command=self.stop).pack(side="left", padx=2)
+
+        tk.Button(bar, text="Velocity mode", command=self.velocity_mode).pack(
+            side="left", padx=2
+        )
+
+        # countdown timer (right side of the bar)
+        self.timer_label = tk.Label(
+            bar,
+            text=format_mmss(TIMER_SECONDS),
+            font=("Helvetica", 16, "bold"),
+            width=6,
+        )
+        self.timer_label.pack(side="right", padx=6)
+        tk.Label(bar, text="Time left:").pack(side="right")
 
         # ----- plot -----
         fig = Figure(figsize=(7, 3.5), dpi=100)
@@ -86,6 +108,7 @@ class GUI:
         self._running = False
         self._after_id = None
         self._t0 = None
+        self._timer_t0 = None  # monotonic start of the countdown
         self._t_data = deque(maxlen=WINDOW_SIZE)
         self._y_data = deque(maxlen=WINDOW_SIZE)
 
@@ -99,18 +122,45 @@ class GUI:
         except ValueError:
             return 1.0
 
+    def _reset_timer(self):
+        self._timer_t0 = None
+        self.timer_label.config(text=format_mmss(TIMER_SECONDS), fg="black")
+
+    def _update_timer(self):
+        if self._timer_t0 is None:
+            return
+        remaining = TIMER_SECONDS - (time.monotonic() - self._timer_t0)
+        self.timer_label.config(
+            text=format_mmss(remaining + 0.999),  # round up so 00:00 only at zero
+            fg="red" if remaining <= 0 else "black",
+        )
+        if remaining <= 0 and AUTO_STOP_AT_ZERO and self._running:
+            self.stop(reset_timer=False)
+
     def start(self):
+        if not self.orch.start():
+            return
+
         self._t0 = time.time()
         self._t_data.clear()
         self._y_data.clear()
         self.data.clear()
         self.data.extend([0.0] * WINDOW_SIZE)
-        self.orch.start()
-        self._running = True
 
-    def stop(self):
+        self._running = True
+        self._reset_timer()
+        self._timer_t0 = time.monotonic()
+
+    def stop(self, reset_timer=True):
         self.orch.stop()
         self._running = False
+        if reset_timer:
+            pass  # self._reset_timer()
+        else:
+            self._timer_t0 = None  # freeze the display (at 00:00)
+
+    def velocity_mode(self):
+        self.orch.commit_profile()
 
     def redraw(self):
         try:
@@ -124,6 +174,8 @@ class GUI:
                 self.ax.relim()
                 self.ax.autoscale_view(scalex=False, scaley=True)
                 self.canvas.draw_idle()
+
+                self._update_timer()
 
             state = self.orch.check_state()
             self.state_canvas.itemconfig(self.orch_state_text, text=state)
