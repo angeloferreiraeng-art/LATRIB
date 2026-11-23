@@ -129,7 +129,9 @@ class Orchestrator:
         # Least-squares fit: y = a*x + b
         a, b = np.polyfit(x, y, 1)
 
+        print(f"SETTED CH-{self.channel_idx} CURVE TO {a}x+{b}")
         self.sensors.set_converter(self.channel_idx, a, b)
+        print("VALUES:",a*x+b)
         self.read_list.clear()
         self.ref_list.clear()
         self.sensors.stop()
@@ -162,14 +164,18 @@ class Orchestrator:
             print(f"Trying to start on state {self.state.name}, ignoring.")
             return False
 
+    def start_raw(self):
+        self.sensors.start()
+        self.state = State.RUNNING
+
     def reset(self):
         self.sensors.flush()
 
     def read_channel(self, channel) -> float:
         """Outputs buffered data to the given file. May fail."""
         if self.state == State.RUNNING or self.state == State.CALIBRATING:
-            frame = self.sensors.read()
-            print("reading")
+            self.sensors.flush()
+            frame = self.sensors.read_buffered()
             return frame[channel]
         else:
             print("Sensors are not activated!")

@@ -7,17 +7,15 @@ import matplotlib.pyplot as plt
 
 from simulator import HardwareSim
 
-with HardwareSim() as rig:
-    # rig.start()
-    rig.set_channel(1, 500, 10)
-    orc = Orchestrator(rig.make_config())
+
+def run(orc):
+    orc.commit_profile()
     orc.start()
     print("state:", orc.check_state())
-    orc.start_calibration(1)
 
     # rig.set_channel(
     def eval_value():
-        read_val = orc.read_channel(1)
+        read_val = orc.read_channel(3)
         # read_val=np.average(buff)
         # amplitude=np.max(buff)-np.min(buff)
         # print(f"LIMITS {np.max(buff)} , {np.min(buff)}")
@@ -82,7 +80,7 @@ with HardwareSim() as rig:
         ymin, ymax = min(data), max(data)
         margin = max((ymax - ymin) * 0.1, 0.1)
         ax.set_ylim(ymin - margin, ymax + margin)
-        cal()
+        # cal()
         return (line,)
 
     ani = animation.FuncAnimation(
@@ -96,3 +94,14 @@ with HardwareSim() as rig:
     plt.tight_layout()
     plt.show()
     orc.stop()
+
+
+# orc = Orchestrator()
+# cfg=parse_config("config.txt")
+# run(orc)
+# exit()
+with HardwareSim() as rig:
+    # rig.start()
+    rig.set_channel(1, 500, 10)
+    orc = Orchestrator(rig.make_config())
+    run(orc)

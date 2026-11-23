@@ -851,6 +851,14 @@ class HardwareSim:
             cfg[f"SENSORS_CHANNEL{i}_RESONANCE"] = "0.7071"
             cfg[f"SENSORS_CHANNEL{i}_GAIN"] = "1.0"
             cfg[f"SENSORS_CHANNEL{i}_OFFSET"] = "0.0"
+
+            cfg[f"SENSORS_CHANNEL{i}_LPF"] = str(0)
+            cfg[f"SENSORS_CHANNEL{i}_GAIN_IDX"] = str(5)
+            cfg[f"SENSORS_CHANNEL{i}_SENS_PWR"] = str(2)
+            cfg[f"SENSORS_CHANNEL{i}_INPUT_DC"] = str(0)
+            cfg[f"SENSORS_CHANNEL{i}_INPUT_AC"] = str(0)
+            cfg[f"SENSORS_CHANNEL{i}_USE_BALANCE"] = str(0)
+            cfg[f"SENSORS_CHANNEL{i}_BALANCE"] = str(0)
         cfg.update(SENSORS_IP=self.udp_host, SENSORS_PORT=str(self.udp_port), SENSORS_BIND_IP="127.0.0.1",
                    SENSORS_BIND_PORT=str(bind_port), SENSORS_RATE=str(rate_hz),
                    SENSORS_FRAME_PER_PACKET=str(frames_per_packet), SENSORS_TIMEOUT=str(timeout_s),

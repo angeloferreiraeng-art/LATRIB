@@ -162,13 +162,19 @@ class SensorsConfig:
     def from_config(cls, src: dict[str, str]) -> SensorsConfig:
         ch_confs = []
         for i in range(N_CHANNELS):
-            ch_type = int(src[f"SENSORS_CHANNEL{i}_TYPE"])
-            ch_cutoff = float(src[f"SENSORS_CHANNEL{i}_CUTOFF"])
-            ch_resonance = float(src[f"SENSORS_CHANNEL{i}_RESONANCE"])
-            ch_gain = float(src[f"SENSORS_CHANNEL{i}_GAIN"])
-            ch_offset = float(src[f"SENSORS_CHANNEL{i}_OFFSET"])
             conf = ChannelConfig(
-                ch_gain, ch_offset, ch_cutoff, ch_resonance, t_sensor=ch_type
+                gain=float(src[f"SENSORS_CHANNEL{i}_GAIN"]),
+                offset=float(src[f"SENSORS_CHANNEL{i}_OFFSET"]),
+                cutoff_freq=float(src[f"SENSORS_CHANNEL{i}_CUTOFF"]),
+                resonance=float(src[f"SENSORS_CHANNEL{i}_RESONANCE"]),
+                t_sensor=int(src[f"SENSORS_CHANNEL{i}_TYPE"]),
+                i_lpf=int(src[f"SENSORS_CHANNEL{i}_LPF"]),
+                i_gain_idx=int(src[f"SENSORS_CHANNEL{i}_GAIN_IDX"]),
+                i_sens_pwr=int(src[f"SENSORS_CHANNEL{i}_SENS_PWR"]),
+                input_dc=int(src[f"SENSORS_CHANNEL{i}_INPUT_DC"]),
+                input_ac=int(src[f"SENSORS_CHANNEL{i}_INPUT_AC"]),
+                use_balance=int(src[f"SENSORS_CHANNEL{i}_USE_BALANCE"]),
+                balance=int(src[f"SENSORS_CHANNEL{i}_BALANCE"]),
             )
             ch_confs.append(conf)
         return cls(
@@ -183,6 +189,7 @@ class SensorsConfig:
         )
 
 
+@dataclass
 class Converter:
     def __init__(self, offset: float, gain: float):
         self.offset = offset
@@ -198,6 +205,7 @@ class Converter:
         return block
 
 
+@dataclass
 class BiQuadFilter:
     _resonance_peak_offset = 1 - 1 / np.sqrt(2)
 
@@ -294,11 +302,13 @@ class Sensors:
     """Wrapper da conexão UDP com o DLG."""
 
     def __init__(self, config: SensorsConfig):
+        print(f"Connecting to Datalogger at IP {config.ip_address} PORT {config.port}")
         self.address = (config.ip_address, config.port)
         self.rate_hz = config.rate_hz
         self.samples_per_pack = config.n_bursts_pack
         self.timeout = config.timeout_s
         self.bind_point = (config.bind_ip, config.bind_port)
+        self.channel_configs = config.channel_configs
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         try:
             sock.bind((config.bind_ip or "0.0.0.0", config.bind_port))
@@ -338,10 +348,12 @@ class Sensors:
                 f"Failed to configure DataLogger CH-{i}, Config was truncated."
             )
             self.types.append(cfg.t_sensor)
+            print("CHANNEL CFG:", cfg.cutoff_freq, cfg.offset, cfg.gain)
             filter = BiQuadFilter(self.rate_hz, cfg.cutoff_freq, cfg.resonance)
-            filter.set_unfiltered()
+            # filter.set_unfiltered()
             self.filters.append(filter)
             converter = Converter(cfg.offset, cfg.gain)
+
             self.converters.append(converter)
         self.rate_hz = self.acq_setup(self.rate_hz, self.samples_per_pack)
 
@@ -432,156 +444,65 @@ class Sensors:
             return real
         return float(rate_hz)
 
-    def calibrate_filter_old(self, idx: int, n_samples: int = 512):
-        """Automatically listens to the current signal on channel `channel_idx`,
-        analyzes noise and main frequencies via FFT, and updates the BiQuadFilter
-        cutoff frequency to filter out the noise and make the signal constant.
-
-        Args:
-            channel_idx: Index of the channel to calibrate.
-            n_samples: Number of raw samples to capture for noise analysis.
-
-        Returns:
-            The newly calculated and applied cutoff frequency in Hz.
-        """
-        raw_values = []
-        start_time = time.time()
-        # 1. Listen to the current signal stream to capture noise
-        while len(raw_values) < n_samples:
-            if time.time() - start_time > self.timeout * max(1, n_samples // 50):
-                break
-            try:
-                raw_packet, _ = self.sock.recvfrom(RECV_BUFFER)
-                frames = parse_pack(raw_packet, N_CHANNELS)
-                if len(frames) > idx:
-                    block = frames[idx]
-                    if block:
-                        raw_values.extend(block)
-            except socket.timeout:
-                continue
-
-        signal_data = np.array(raw_values, dtype=float)
-
-        # 2. Analyze frequency spectrum using FFT (ignoring DC offset at index 0)
-        detrended = signal_data - np.mean(signal_data)
-        fft_vals = np.abs(np.fft.rfft(detrended))
-        freqs = np.fft.rfftfreq(len(signal_data), d=1.0 / self.rate_hz)
-
-        if len(freqs) > 1:
-            peak_idx = np.argmax(fft_vals[1:]) + 1
-            dominant_noise_freq = freqs[peak_idx]
-            print(dominant_noise_freq)
-        else:
-            dominant_noise_freq = self.rate_hz / 4.0
-
-        # 3. Determine optimal cutoff frequency below the dominant noise/main frequency
-        # If mains hum or noise is detected, set cutoff below it to flatten the signal
-        if dominant_noise_freq > 2.0:
-            new_cutoff = dominant_noise_freq  # * 0.8
-        else:
-            new_cutoff = self.rate_hz / 10.0  # Fallback safety margin
-
-        # Bound check according to BiQuadFilter constraints (< 0.499 * sample_rate)
-        max_allowed_cutoff = 0.499 * self.rate_hz
-        new_cutoff = max(0.5, min(new_cutoff, max_allowed_cutoff))
-        new_cutoff = 25
-        print(f"Channel {idx} cutoff set to {new_cutoff} Hz")
-        # new_filter = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
-        new_filter = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
-        self.filters[idx] = new_filter
-
     def calibrate_filter(
         self,
         idx: int,
-        n_samples: int = 512,
+        n_samples: int = 32,
         min_freq: float = 2.0,
         max_cutoff: float = 30.0,
     ):
-        """Automatically listens to the current signal on channel `idx`,
-        analyzes noise frequencies via FFT, and updates the filter cutoff
-        to the lowest-frequency significant noise peak.
-
-        Args:
-            idx: Index of the channel to calibrate.
-            n_samples: Number of raw samples to capture for noise analysis.
-            min_freq: Minimum frequency (Hz) to consider (ignores near-DC drift).
-
-        Returns:
-            The newly calculated and applied cutoff frequency in Hz.
-        """
         self.flush()
-        raw_values = []
-        start_time = time.time()
 
-        # 1. Listen to the current signal stream to capture noise
-        while len(raw_values) < n_samples:
-            if time.time() - start_time > self.timeout * max(1, n_samples // 50):
-                break
-            try:
-                raw_packet, _ = self.sock.recvfrom(RECV_BUFFER)
-                frames = parse_pack(raw_packet, N_CHANNELS)
-                if len(frames) > idx:
-                    block = frames[idx]
-                    if block:
-                        raw_values.extend(block)
-            except socket.timeout:
-                continue
+        # Collect n_samples frames, each containing n_channel values
+        samples = np.array([self.read_raw() for _ in range(n_samples)], dtype=float)
+        signal_data = samples[:, idx]
 
-        if len(raw_values) < 8:
-            # Fallback if packet capture timed out with insufficient data
-            new_cutoff = self.rate_hz / 10.0
-            self.filters[idx] = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
-            return new_cutoff
-
-        signal_data = np.array(raw_values[:n_samples], dtype=float)
-
-        # 2. Apply Hann window & compute FFT (prevents spectral leakage from hiding smaller peaks)
+        # Detrend, window, and compute one-sided FFT magnitude
         detrended = signal_data - np.mean(signal_data)
         windowed = detrended * np.hanning(len(detrended))
         fft_vals = np.abs(np.fft.rfft(windowed))
         freqs = np.fft.rfftfreq(len(detrended), d=1.0 / self.rate_hz)
 
-        # 3. Find all local peaks above a dynamic threshold (median + 3 * MAD)
-        valid_mask = freqs >= min_freq
-        valid_freqs = freqs[valid_mask]
-        valid_mags = fft_vals[valid_mask]
+        # Focus on frequencies above min_freq to ignore near-DC drift
+        mask = freqs >= min_freq
+        valid_freqs = freqs[mask]
+        valid_mags = fft_vals[mask]
 
         lowest_noise_freq = None
         if len(valid_mags) >= 3:
-            # Robust noise-floor estimation so small background ripples aren't treated as peaks
             median_mag = np.median(valid_mags)
             mad = np.median(np.abs(valid_mags - median_mag))
             threshold = max(median_mag + 3.0 * mad, 0.15 * np.max(valid_mags))
 
-            # Local maxima: strictly greater than both immediate neighbors and above threshold
-            is_local_max = (
-                (valid_mags[1:-1] > valid_mags[:-2])
-                & (valid_mags[1:-1] >= valid_mags[2:])
-                & (valid_mags[1:-1] >= threshold)
+            peaks = (
+                np.where(
+                    (valid_mags[1:-1] > valid_mags[:-2])
+                    & (valid_mags[1:-1] >= valid_mags[2:])
+                    & (valid_mags[1:-1] >= threshold)
+                )[0]
+                + 1
             )
-            peak_indices = np.where(is_local_max)[0] + 1  # +1 offsets the [1:-1] slice
 
-            if len(peak_indices) > 0:
-                # valid_freqs is sorted ascending, so peak_indices[0] is the lowest-frequency peak
-                lowest_noise_freq = valid_freqs[peak_indices[0]]
+            if len(peaks) > 0:
+                lowest_noise_freq = valid_freqs[peaks[0]]
             else:
-                # Fallback to single strongest bin if spectrum is broad without sharp peaks
                 lowest_noise_freq = valid_freqs[np.argmax(valid_mags)]
 
-        if lowest_noise_freq is not None:
-            # Place cutoff slightly below the lowest noise peak so it is attenuated,
-            # or set directly to lowest_noise_freq if you want -3 dB right at that peak
-            new_cutoff = lowest_noise_freq * 0.8
-        else:
-            new_cutoff = self.rate_hz / 10.0
-
-        # 4. Clamp to safe BiQuad range and apply filter
-        max_allowed_cutoff = 0.498 * self.rate_hz
-        new_cutoff = float(np.clip(new_cutoff, 0.5, max_allowed_cutoff))
-        new_cutoff = min(max_cutoff, new_cutoff)  # NOTE:REWRITE THIS
-        print(
-            f"Channel {idx}: lowest noise peak at {lowest_noise_freq} Hz -> cutoff set to {new_cutoff:.2f} Hz"
+        raw_cutoff = (
+            lowest_noise_freq * 0.8
+            if lowest_noise_freq is not None
+            else self.rate_hz / 10.0
         )
+
+        # Clamp to safe BiQuad range and caller's max_cutoff
+        upper_bound = min(max_cutoff, 0.498 * self.rate_hz)
+        new_cutoff = float(np.clip(raw_cutoff, 0.5, upper_bound))
+
+        print(
+            f"Channel {idx}: lowest noise peak at {lowest_noise_freq} Hz -> "
+            f"cutoff set to {new_cutoff:.2f} Hz"
+        )
+        new_cutoff = 15.0
         self.filters[idx] = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
 
     def start(self):
@@ -630,10 +551,32 @@ class Sensors:
         """Reads the next data frame in a nice manner. Filters and adjust value to calibrated units."""
         raw = self.read_raw()
         out_data = []  # np.zeros(N_CHANNELS)
-        for r, f, c in zip(raw, self.filters, self.converters):
-            b = f.process(r)
-            b = c.process(b)
-            out_data.append(b)
+        for i in range(N_CHANNELS):
+            r = raw[i]
+            f = self.filters[i]
+            c = self.converters[i]
+            val_f = f.process(r)
+            val_c = c.process(val_f)
+            out_data.append(val_c)
+            if i == 3:
+                print(f"raw {r}, filtered {val_f}, converter {val_c}")
+
+        return np.array(out_data)
+
+    def read_nice(self):
+        """Reads the next data frame in a nice manner. Filters and adjust value to calibrated units."""
+        raw = self.read_buffered()
+        out_data = []  # np.zeros(N_CHANNELS)
+        for i in range(N_CHANNELS):
+            r = raw[i]
+            f = self.filters[i]
+            c = self.converters[i]
+            val_f = f.process(r)
+            val_c = c.process(val_f)
+            out_data.append(val_c)
+            if i == 3:
+                print(f"raw {r}, filtered {val_f}, converter {val_c}")
+
         return np.array(out_data)
 
     def read_raw(self):
@@ -655,10 +598,11 @@ class Sensors:
             out_data[i] = b
         return out_data
 
-    def read_buffered(self, b_size: int = 32):
+    def read_buffered(self, b_size: int = 16):
         out = np.zeros((N_CHANNELS, b_size))
         for i in range(b_size):
             frame = self.read_raw()
+            print(frame[3])
             out[:, i] = frame
         mean = np.mean(out, axis=1)
         return mean
@@ -674,14 +618,24 @@ class Sensors:
         finally:
             self.sock.settimeout(self.timeout)
 
-    def register_configs(self, dst):
+    def register_configs(self, dst: dict[str, str]):
         """Pushes the current configs to the output table for calibration record."""
         for i in range(N_CHANNELS):
-            dst[f"SENSORS_CHANNEL{i}_TYPE"] = str(self.types[i])
-            dst[f"SENSORS_CHANNEL{i}_CUTOFF"] = str(self.filters[i].cutoff)
-            dst[f"SENSORS_CHANNEL{i}_RESONANCE"] = str(self.filters[i].resonance)
+            cfg = self.channel_configs[i]
+            # values that can change at runtime come from the live objects
             dst[f"SENSORS_CHANNEL{i}_GAIN"] = str(self.converters[i].gain)
             dst[f"SENSORS_CHANNEL{i}_OFFSET"] = str(self.converters[i].offset)
+            dst[f"SENSORS_CHANNEL{i}_CUTOFF"] = str(self.filters[i].cutoff)
+            dst[f"SENSORS_CHANNEL{i}_RESONANCE"] = str(self.filters[i].resonance)
+            dst[f"SENSORS_CHANNEL{i}_TYPE"] = str(self.types[i])
+            # static values come from the stored config
+            dst[f"SENSORS_CHANNEL{i}_LPF"] = str(cfg.i_lpf)
+            dst[f"SENSORS_CHANNEL{i}_GAIN_IDX"] = str(cfg.i_gain_idx)
+            dst[f"SENSORS_CHANNEL{i}_SENS_PWR"] = str(cfg.i_sens_pwr)
+            dst[f"SENSORS_CHANNEL{i}_INPUT_DC"] = str(cfg.input_dc)
+            dst[f"SENSORS_CHANNEL{i}_INPUT_AC"] = str(cfg.input_ac)
+            dst[f"SENSORS_CHANNEL{i}_USE_BALANCE"] = str(cfg.use_balance)
+            dst[f"SENSORS_CHANNEL{i}_BALANCE"] = str(cfg.balance)
 
         dst["SENSORS_IP"] = str(self.address[0])
         dst["SENSORS_PORT"] = str(self.address[1])
