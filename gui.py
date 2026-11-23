@@ -1,6 +1,4 @@
-﻿"""Minimal supervisory UI: start/stop the DLG logger over IPC and plot CoF (CH1 / normal force) live."""
-
-import os
+﻿import os
 import time
 import tkinter as tk
 from tkinter import ttk
@@ -62,9 +60,12 @@ def ask_value(parent, title="Enter value", prompt="Value:", default=""):
     result = {"channel": None, "name": "UNNAMED"}
 
     def on_ok():
-        # TODO: TRY CATCH BLOCK HERE.
-        result["value"] = ch_entry.get()
-        result["name"] = name_entry.get()
+        try:
+            result["channel"] = int(ch_entry.get())
+            result["name"] = name_entry.get() or "UNNAMED"
+        except ValueError:
+            # Invalid channel number — leave as None so caller can ignore
+            result["channel"] = None
         win.destroy()
 
     def on_cancel():
@@ -198,44 +199,7 @@ class GUI:
         ttk.Button(configs, text="Adicional Canal", command=self.add_channel).grid(
             row=0, column=2, **pad
         )
-
-        # --- Normal force calibration ---
-        lf_force = ttk.LabelFrame(tab, text="Normal force calibration")
-        lf_force.pack(fill="x", padx=10, pady=8)
-
-        ttk.Label(lf_force, text="Known force [N]:").grid(
-            row=0, column=0, sticky="w", **pad
-        )
-        ttk.Entry(lf_force, width=10).grid(row=0, column=1, sticky="w", **pad)
-        ttk.Button(lf_force, text="Capture zero").grid(row=0, column=2, **pad)
-        ttk.Button(lf_force, text="Calibrate").grid(row=0, column=3, **pad)
-
-        # --- Friction force calibration ---
-        lf_fric = ttk.LabelFrame(tab, text="Friction force calibration")
-        lf_fric.pack(fill="x", padx=10, pady=8)
-
-        ttk.Label(lf_fric, text="Known CoF [-]:").grid(
-            row=0, column=0, sticky="w", **pad
-        )
-        ttk.Entry(lf_fric, width=10).grid(row=0, column=1, sticky="w", **pad)
-        ttk.Button(lf_fric, text="Capture zero").grid(row=0, column=2, **pad)
-        ttk.Button(lf_fric, text="Calibrate").grid(row=0, column=3, **pad)
-
-        # --- Populate Channels ---
-        for ch in self.orch.channels():
-            ch_frame = ttk.LabelFrame(tab, text=ch)
-            ch_frame.pack(fill="x", padx=10, pady=8)
-            ttk.Button(ch_frame, text="Começar Calibração").grid(row=0, column=0, **pad)
-            ttk.Button(ch_frame, text="Terminar Calibração").grid(
-                row=0, column=1, **pad
-            )
-
-            ttk.Label(ch_frame, text="Valor referência:").grid(
-                row=1, column=0, sticky="w", **pad
-            )
-            ttk.Entry(ch_frame, width=10).grid(row=1, column=1, sticky="w", **pad)
-            ttk.Button(ch_frame, text="Capturar Sinal").grid(row=1, column=2, **pad)
-
+        self._populate_channels()
         # --- Action buttons ---
         actions = tk.Frame(tab)
         actions.pack(fill="x", padx=10, pady=12)
@@ -243,8 +207,43 @@ class GUI:
         ttk.Button(actions, text="Load calibration").pack(side="left", padx=4)
         ttk.Button(actions, text="Reset to defaults").pack(side="left", padx=4)
 
-    # ------------------------------------------------------------------
-    # TIMER
+    def _populate_channels(self):
+        # Clear existing channel frames before repopulating
+        for widget in getattr(self, "_channel_frames", []):
+            widget.destroy()
+        self._channel_frames = []
+
+        pad = {"padx": 8, "pady": 4}
+        self.channels = self.orch.channels()
+        for ch in self.channels:
+            ch_frame = ttk.LabelFrame(self.tab_calibration, text=ch["name"])
+            ch_frame.pack(fill="x", padx=10, pady=8)
+            self._channel_frames.append(ch_frame)
+
+            ttk.Button(
+                ch_frame,
+                text="Começar Calibração",
+                command=lambda n=ch["number"]: self.orch.start_calibration(n),
+            ).grid(row=0, column=0, **pad)
+            ttk.Button(
+                ch_frame,
+                text="Terminar Calibração",
+                command=lambda: self.orch.commit_calibration(),
+            ).grid(row=0, column=1, **pad)
+
+            ttk.Label(ch_frame, text="Valor referência:").grid(
+                row=1, column=0, sticky="w", **pad
+            )
+            ref_entry = ttk.Entry(ch_frame, width=10)
+            ref_entry.grid(row=1, column=1, sticky="w", **pad)
+            ttk.Button(
+                ch_frame,
+                text="Capturar Sinal",
+                command=lambda e=ref_entry: self.orch.ref_point(int(e.get())),
+            ).grid(row=1, column=2, **pad)
+
+        # TIMER
+
     # ------------------------------------------------------------------
     def _reset_timer(self):
         self._timer_t0 = None
@@ -290,7 +289,11 @@ class GUI:
         self.orch.commit_profile()
 
     def add_channel(self):
-        ask_value(self.root, "nome", "coiso")
+        result = ask_value(self.root, "nome", "coiso")
+        if result and result.get("channel"):
+            # Add the channel to the orchestrator, then refresh the UI
+            self.orch.add_channel(result["channel"], result["name"])
+            self._populate_channels()
 
     def calibration_mode(self):
         self.orch.start_calibration()

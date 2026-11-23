@@ -184,9 +184,9 @@ class Orchestrator:
 
     def channels(self):
         out = []
-        for ch_e, ch_n in zip(self.enables, self.ch_names):
-            if ch_e:
-                out.append(ch_n)
+        for i in range(N_CHANNELS):
+            if self.enables[i]:
+                out.append({"number": i, "name": self.ch_names[i]})
         return out
 
     def read_channel(self, channel) -> float:
