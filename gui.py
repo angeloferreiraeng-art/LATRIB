@@ -165,10 +165,12 @@ class GUI:
 
         tk.Button(bar, text="Start", command=self.start).pack(side="left", padx=2)
         tk.Button(bar, text="Stop", command=self.stop).pack(side="left", padx=2)
-        tk.Button(bar, text="Velocity mode", command=self.velocity_mode).pack(
+        tk.Button(bar, text="Velocity mode", command=self.orch.commit_profile).pack(
             side="left", padx=2
         )
-
+        tk.Button(bar, text="Position mode", command=self.orch.commit_pos_profile).pack(
+            side="left", padx=2
+        )
         # ----- channel selector -----
         tk.Label(bar, text="Channel:").pack(side="left", padx=(12, 2))
         self.channel_var = tk.StringVar()

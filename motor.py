@@ -383,6 +383,87 @@ class Motor:
             v = self._read(ADDR_MULTI_SPEED_FIRST + i)
             assert d == v, f"VALUE WRITE ERROR: TRIED TO WRITE {d}, READ BACK IS {v}"
 
+    def set_pos_profile(self):
+        NUM_SEGMENTS = 8
+        SEG_TIME = 1
+        times = np.ones(NUM_SEGMENTS) * SEG_TIME
+        half_period = np.sum(times) / 10
+        print("period", 2 * half_period)
+        STROKE_SIZE = 50  # rpm
+        omega = np.pi / (half_period)
+        print("omega", omega)
+        modifier = peak_integral(self.a_factor, self.b_factor)
+        max_rpm = 0.5 * STROKE_SIZE / modifier
+        f = peak_generator(omega, self.a_factor, self.b_factor, max_rpm=max_rpm)
+        v_plus = []
+        v_minus = []
+        t = 0
+        for dt in times:
+            t = t + (dt / 10)
+            speed = int(np.floor(f(t)))
+            print(speed)
+            assert speed >= 0, "HALFSTROKE SPEED NEEDS TO BE POSITIVE."
+            v_plus.append(speed)
+            v_minus.append(-speed)
+        speeds = np.append(v_plus, np.flip(v_minus))
+        full_times = np.append(times, times)
+        assert len(speeds) == len(full_times), "VEL CONTROL THING BROKE"
+        self.pos_ctrl_unchecked(full_times, speeds)
+        self.mode = "POS_CTRL"
+
+    def pos_ctrl_unchecked(self, times, positions):
+        print(":::::SETTING POSITION SINE::::::")
+        PULSE_PER_ROT = 10000
+        # NOTE:  I dont know what any of these do, keep it just to be safe.
+        self._write(ADDR_VDI_LEVEL, 0)
+        self._write(ADDR_VDI_ENABLE, 1)
+        self._write(ADDR_DI1_FN, 0)
+
+        self._write(ADDR_VDI_FN1, 1)
+        self._write(ADDR_VDI_FN2, 28)
+
+        # Set mode to position
+        self._write(ADDR_CTRL_MODE, 1)
+
+        self._write(ADDR_POS_SRC_SEL, 2)  # muti segment
+        self._write(ADDR_PULSE_PER_ROT, PULSE_PER_ROT)
+        self._write(ADDR_POS_LOW_PASS, 10)
+        self._write(ADDR_POS_TIME_CTE, 10)
+
+        n_segments = len(times)
+
+        TIME_UNIT = 0
+        data = [1, n_segments, 0, TIME_UNIT, 0, 1]  # header
+        self._write_many(ADDR_MULTI_POS_HEAD, data)
+
+        data = []
+        t = 0
+        x0 = positions[-1]
+        addr = ADDR_MULTI_POS_FIRST
+        for dt, rot in zip(times, positions):
+            t = t + dt
+            x1 = int(np.floor(PULSE_PER_ROT * rot))
+            # print(f"WRITING:{x1},ADDR:{addr:X}")
+            self._write_u32(addr, x1)
+            wrote = self._read_u32(addr)
+            # print(f"READING:{wrote}")
+            addr = addr + 2
+            speed = int((x1 - x0) / dt) & 0xFFFF
+            x0 = x1
+            self._write(addr, speed)
+            addr = addr + 1
+            accel = 0  # int(500 * dt)  # TODO:DO CALC ON THIS
+            self._write(addr, accel)
+            addr = addr + 1
+            wait = 0
+            self._write(addr, wait)
+            addr = addr + 1
+
+        read = self._read_many(ADDR_MULTI_POS_FIRST, 5 * len(times))
+        # print(read)
+        # for a,b in zip(data,read):
+        # assert(a==b),f"VALUE WRITE ERROR: TRIED TO WRITE {a}, READ BACK IS {b}"
+
 
 if __name__ == "__main__":
     raise RuntimeError("Motor is a library, it cannot be run directly")

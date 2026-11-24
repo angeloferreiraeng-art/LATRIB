@@ -159,6 +159,10 @@ class Orchestrator:
         self.motor.set_vel_profile()
         self.state = State.READY
 
+    def commit_pos_profile(self):
+        self.motor.set_pos_profile()
+        self.state = State.READY
+
     def dump_config(self, path: Path):
         cfg = {}
 
