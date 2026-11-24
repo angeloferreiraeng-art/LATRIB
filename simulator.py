@@ -838,7 +838,11 @@ class HardwareSim:
         """Config dict in the format Orchestrator expects (same keys parse_config() produces)."""
         types = [4, 4, 4, 1, 4, 4, 4, 4]  # SensorsConfig defaults
         cfg = {}
+
+        cfg["SYSTEM_LAST_CALIBRATION_DATE"] = "NEVER"
         for i in range(N_CH):
+            cfg[f"SYSTEM_CHANNEL{i}_ENABLE"] = str(False)
+            cfg[f"SYSTEM_CHANNEL{i}_NAME"] = str("UNDEFINED")
             cfg[f"SENSORS_CHANNEL{i}_TYPE"] = str(types[i])
             cfg[f"SENSORS_CHANNEL{i}_CUTOFF"] = str(cutoff)
             cfg[f"SENSORS_CHANNEL{i}_RESONANCE"] = "0.7071"

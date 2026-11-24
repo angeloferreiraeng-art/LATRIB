@@ -52,8 +52,20 @@ class Orchestrator:
 
     def __init__(self, config: dict[str, str] | None = None) -> None:
         self.state = State.INIT
-        self.enables = [True] + 7 * [False]  # [False for i in range(N_CHANNELS)]
-        self.ch_names = ["UNDEFINED" for i in range(N_CHANNELS)]
+        if config is None:
+            self.last_calibration = "NEVER"
+            self.enables = [False for i in range(N_CHANNELS)]
+            self.ch_names = ["UNDEFINED" for i in range(N_CHANNELS)]
+        else:
+            self.last_calibration = config["SYSTEM_LAST_CALIBRATION_DATE"]
+            self.enables, self.ch_names = [], []
+            for i in range(N_CHANNELS):
+                print(config[f"SYSTEM_CHANNEL{i}_ENABLE"])
+                enable = (
+                    True if config[f"SYSTEM_CHANNEL{i}_ENABLE"] == "True" else False
+                )
+                self.enables.append(enable)
+                self.ch_names.append(config[f"SYSTEM_CHANNEL{i}_NAME"])
 
         self.channel_idx: int = 0
         self.read_list: list[float] = []
@@ -66,6 +78,7 @@ class Orchestrator:
         self.motor: Motor = Motor(m_config)
 
         self.state = State.IDLE
+        print(self.enables)
 
     def eval_state(
         self,
@@ -148,6 +161,11 @@ class Orchestrator:
 
     def dump_config(self, path: Path):
         cfg = {}
+
+        cfg["SYSTEM_LAST_CALIBRATION_DATE"] = self.last_calibration
+        for i in range(N_CHANNELS):
+            cfg[f"SYSTEM_CHANNEL{i}_ENABLE"] = str(self.enables[i])
+            cfg[f"SYSTEM_CHANNEL{i}_NAME"] = str(self.ch_names[i])
         self.sensors.register_configs(cfg)
         self.motor.register_configs(cfg)
         with open(path, "w") as f:

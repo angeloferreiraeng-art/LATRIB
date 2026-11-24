@@ -108,6 +108,9 @@ class GUI:
         self.orch_state_text = self.state_canvas.create_text(
             70, 20, text="NONE", fill="white", font=("Helvetica", 12, "bold")
         )
+        self.orch_cal_text = self.state_canvas.create_text(
+            70, 20, text="", fill="white", font=("Helvetica", 12, "bold")
+        )
 
         # --- right: countdown timer ---
         self.timer_label = tk.Label(
@@ -132,7 +135,7 @@ class GUI:
 
         self._build_supervision_tab()
         self._build_calibration_tab()
-
+        self._populate_channels()
         # ==================================================================
         # ORCHESTRATOR + STATE
         # ==================================================================
@@ -166,6 +169,16 @@ class GUI:
             side="left", padx=2
         )
 
+        # ----- channel selector -----
+        tk.Label(bar, text="Channel:").pack(side="left", padx=(12, 2))
+        self.channel_var = tk.StringVar()
+        self.channel_combo = ttk.Combobox(
+            bar, textvariable=self.channel_var, state="readonly", width=22
+        )
+        self.channel_combo.pack(side="left", padx=2)
+        self.channel_combo.bind("<<ComboboxSelected>>", self._on_channel_selected)
+        self._refresh_channel_combo()
+
         # ----- plot -----
         fig = Figure(figsize=(7, 3.5), dpi=100)
         self.ax = fig.add_subplot(111)
@@ -177,7 +190,7 @@ class GUI:
             range(WINDOW_SIZE), self.data, color="#007acc", linewidth=1.8
         )
         self.ax.set_xlabel("Time [s]")
-        self.ax.set_ylabel("CoF [-]")
+        self._update_ylabel()
         self.ax.set_xlim(0, WINDOW_SIZE)
         self.ax.grid(alpha=0.5)
 
@@ -199,7 +212,6 @@ class GUI:
         ttk.Button(configs, text="Adicional Canal", command=self.add_channel).grid(
             row=0, column=2, **pad
         )
-        self._populate_channels()
         # --- Action buttons ---
         actions = tk.Frame(tab)
         actions.pack(fill="x", padx=10, pady=12)
@@ -215,6 +227,7 @@ class GUI:
 
         pad = {"padx": 8, "pady": 4}
         self.channels = self.orch.channels()
+
         for ch in self.channels:
             ch_frame = ttk.LabelFrame(self.tab_calibration, text=ch["name"])
             ch_frame.pack(fill="x", padx=10, pady=8)
@@ -242,8 +255,51 @@ class GUI:
                 command=lambda e=ref_entry: self.orch.ref_point(int(e.get())),
             ).grid(row=1, column=2, **pad)
 
-        # TIMER
+    # ------------------------------------------------------------------
+    # CHANNEL SELECTOR
+    # ------------------------------------------------------------------
+    def _refresh_channel_combo(self):
+        """Rebuild the dropdown options from the orchestrator's channel list."""
+        channels = self.orch.channels()
+        self._channel_lookup = {
+            f"{ch['number']} - {ch['name']}": ch["number"] for ch in channels
+        }
+        self.channel_combo["values"] = list(self._channel_lookup.keys())
+        if self.channel_combo["values"]:
+            if self.channel_var.get() not in self._channel_lookup:
+                self.channel_var.set(self.channel_combo["values"][0])
+        else:
+            self.channel_var.set("")
+        if hasattr(self, "ax"):
+            self._update_ylabel()
 
+    def _on_channel_selected(self, event=None):
+        """Reset the plot buffers when the user switches channels."""
+        self.data.clear()
+        self.data.extend([0.0] * WINDOW_SIZE)
+        self._t_data.clear()
+        self._y_data.clear()
+        self.line_1.set_data(range(WINDOW_SIZE), list(self.data))
+        self.ax.relim()
+        self.ax.autoscale_view(scalex=False, scaley=True)
+        self._update_ylabel()
+        self.canvas.draw_idle()
+
+    def _selected_channel_number(self):
+        return self._channel_lookup.get(self.channel_var.get())
+
+    def _update_ylabel(self):
+        """Set the y-axis label to the currently selected channel's name."""
+        label = "CoF [-]"
+        for ch in self.orch.channels():
+            if ch["number"] == self._selected_channel_number():
+                label = ch["name"]
+                break
+        self.ax.set_ylabel(label)
+        self.canvas.draw_idle()
+
+    # ------------------------------------------------------------------
+    # TIMER
     # ------------------------------------------------------------------
     def _reset_timer(self):
         self._timer_t0 = None
@@ -289,11 +345,13 @@ class GUI:
         self.orch.commit_profile()
 
     def add_channel(self):
+        print("addin")
         result = ask_value(self.root, "nome", "coiso")
         if result and result.get("channel"):
             # Add the channel to the orchestrator, then refresh the UI
             self.orch.add_channel(result["channel"], result["name"])
             self._populate_channels()
+            self._refresh_channel_combo()
 
     def calibration_mode(self):
         self.orch.start_calibration()
@@ -308,15 +366,17 @@ class GUI:
     def redraw(self):
         try:
             if self._running:
-                val = self.orch.read_channel(3)
-                self.data.append(val)
-                self._t_data.append(time.time() - self._t0)
-                self._y_data.append(val)
+                ch = self._selected_channel_number()
+                if ch is not None:
+                    val = self.orch.read_channel(ch)
+                    self.data.append(val)
+                    self._t_data.append(time.time() - self._t0)
+                    self._y_data.append(val)
 
-                self.line_1.set_data(range(len(self.data)), list(self.data))
-                self.ax.relim()
-                self.ax.autoscale_view(scalex=False, scaley=True)
-                self.canvas.draw_idle()
+                    self.line_1.set_data(range(len(self.data)), list(self.data))
+                    self.ax.relim()
+                    self.ax.autoscale_view(scalex=False, scaley=True)
+                    self.canvas.draw_idle()
 
                 self._update_timer()
 
