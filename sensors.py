@@ -867,12 +867,16 @@ class Sensors:
         Returns:
             Array de ``N_CHANNELS`` valores brutos (média dos bursts).
         """
-        while True:
+        limit = 100
+        for i in range(limit):
             try:
                 return self.read_unchecked()
             except Exception as e:
                 print(f"Reading exception :{e}")
                 pass
+        raise RuntimeError(
+            f"Reached read retry limit of {limit}, connection is likely dead."
+        )
 
     def read_unchecked(self) -> np.ndarray:
         """Lê o próximo frame sem tratamento de erro.

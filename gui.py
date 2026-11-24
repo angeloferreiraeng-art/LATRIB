@@ -422,7 +422,7 @@ class GUI:
 
 
 def main():
-    with HardwareSim() as rig:
+    with HardwareSim(fail_prop=0.5) as rig:
         rig.set_channel(1, 500, 10)
         gui = GUI(rig.make_config())
         gui.run()

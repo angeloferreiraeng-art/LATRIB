@@ -6,6 +6,7 @@ import os
 import select
 import socket
 import struct
+import sys  # NEW
 import threading
 import time
 from collections import deque
@@ -590,6 +591,9 @@ _DATA_HDR = struct.Struct("<HHiifhhiii")
 N_CH = 8
 MAX_SAMPLES_PER_PACKET = 720
 
+# Failure modes injected by DLGSimulator when fail_prop / fail_prop_config > 0
+FAIL_MODES = ("drop", "truncate", "bad_header", "corrupt_samples", "duplicate_prev")
+
 
 class SignalModel:
     """Raw int16 counts for the 8 channels.
@@ -657,10 +661,17 @@ class DLGSimulator:
                     'real frequency' in the AcqSetup reply is honoured).
     reply_to_config send SETCHCFG_R / ACQSTOP_R acknowledgements (sensors.py's acq_setup_new
                     comment says the hardware does).
+    fail_prop       probability [0,1] that any outgoing data packet is corrupted/dropped.
+    fail_prop_config  same, for config acknowledgements (SETCHCFG_R, ACQSTART_R, ...).
     """
 
+    RED = "\033[31m"  # NEW
+    RESET = "\033[0m"  # NEW
+
     def __init__(self, host: str = "127.0.0.1", port: int = 41401, model: SignalModel | None = None,
-                 rate_scale: float = 1.0, max_rate_hz: float = 4000.0, reply_to_config: bool = True):  # fmt: skip
+                 rate_scale: float = 1.0, max_rate_hz: float = 4000.0, reply_to_config: bool = True,
+                 fail_prop: float = 0.0, fail_prop_config: float = 0.0,
+                 fail_seed: int = 0xFA11):  # fmt: skip
         self.model = model or SignalModel()
         self.rate_scale, self.max_rate, self.reply_to_config = (
             rate_scale,
@@ -684,6 +695,16 @@ class DLGSimulator:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="dlg-sim", daemon=True)
 
+        # --- failure injection ------------------------------------------------
+        self.fail_prop = float(fail_prop)
+        self.fail_prop_config = float(fail_prop_config)
+        self.failures = 0  # data packets corrupted/dropped
+        self.config_failures = 0  # config acks corrupted/dropped
+        self.inject_log: deque = deque(maxlen=1000)  # (mode, nbytes)
+        self._last_payload: bytes | None = None  # for duplicate_prev mode
+        # dedicated RNG so failure injection doesn't perturb the signal model's stream
+        self._fail_rng = np.random.default_rng(fail_seed)
+
     def start(self):
         self._thread.start()
         return self
@@ -693,8 +714,74 @@ class DLGSimulator:
         self._thread.join(timeout=2)
         self.sock.close()
 
-    def _reply(self, payload: bytes, addr) -> None:
-        self.sock.sendto(payload, addr)
+    # NEW: red console line for every injected UDP failure
+    def _log_failure(
+        self, mode: str, nbytes: int, is_data: bool, sent: bool = True
+    ) -> None:
+        kind = "DATA" if is_data else "CONFIG"
+        counter = self.failures if is_data else self.config_failures
+        note = "" if sent else " (sent=None)"
+        msg = (
+            f"[UDP FAILURE] {kind} packet #{counter}: mode={mode} bytes={nbytes}{note}"
+        )
+        if sys.stdout.isatty():
+            msg = f"{self.RED}{msg}{self.RESET}"
+        # print(msg, flush=True)
+
+    # -- failure injection -------------------------------------------------
+    def _maybe_fail(self, payload: bytes, is_data: bool) -> bytes | None:
+        """Return payload to send (possibly mutated), or None to drop it."""
+        prop = self.fail_prop if is_data else self.fail_prop_config
+        if prop <= 0.0 or self._fail_rng.random() >= prop:
+            return payload
+        mode = FAIL_MODES[int(self._fail_rng.integers(0, len(FAIL_MODES)))]
+        self.inject_log.append((mode, len(payload)))
+        if is_data:
+            self.failures += 1
+        else:
+            self.config_failures += 1
+        if mode == "drop":
+            self._log_failure(mode, len(payload), is_data, sent=False)  # NEW
+            return None
+        if mode == "truncate":
+            cut = max(1, int(len(payload) * self._fail_rng.uniform(0.1, 0.8)))
+            self._log_failure(mode, len(payload), is_data, sent=True)  # NEW
+            return payload[:cut]
+        if mode == "bad_header":
+            b = bytearray(payload)
+            b[0:2] = struct.pack("<H", int(self._fail_rng.integers(0, 0xFFFF)))
+            b[2:4] = struct.pack("<H", int(self._fail_rng.integers(0, 0xFFFF)))
+            self._log_failure(mode, len(payload), is_data, sent=True)  # NEW
+            return bytes(b)
+        if mode == "corrupt_samples":
+            b = bytearray(payload)
+            hdr = _DATA_HDR.size
+            for i in range(hdr, len(b)):
+                if self._fail_rng.random() < 0.5:
+                    b[i] = int(self._fail_rng.integers(0, 256))
+            self._log_failure(mode, len(payload), is_data, sent=True)  # NEW
+            return bytes(b)
+        if mode == "duplicate_prev":
+            dup = self._last_payload  # may be None -> effectively a drop
+            self._log_failure(mode, len(payload), is_data, sent=dup is not None)  # NEW
+            return dup
+        return payload  # unreachable
+
+    def reset_failures(self) -> None:
+        """Clear counters/log so a test can measure failures from a known point."""
+        self.failures = 0
+        self.config_failures = 0
+        self.inject_log.clear()
+        self._last_payload = None
+
+    # -- socket I/O --------------------------------------------------------
+    def _reply(self, payload: bytes, addr, *, is_data: bool = False) -> None:
+        out = self._maybe_fail(payload, is_data)
+        if out is None:
+            return
+        if not is_data:
+            self._last_payload = payload  # remember last good config reply
+        self.sock.sendto(out, addr)
 
     def _on_packet(self, pkt: bytes, addr) -> None:
         if len(pkt) < _HDR.size:
@@ -747,9 +834,14 @@ class DLGSimulator:
             self._sample_idx += 1
         hdr = _DATA_HDR.pack(OP_ACQDATA, 0, self._frame_no, int(t * 1000) & 0x7FFFFFFF,
                              float(self.rate), n, nch, 0, 0, 0)  # fmt: skip
-        self._frame_no += 1
-        self.packets_sent += 1
-        self._reply(hdr + rows.tobytes(), self._client)
+        payload = hdr + rows.tobytes()
+
+        out = self._maybe_fail(payload, is_data=True)
+        self._last_payload = payload  # remember last good frame for duplicate_prev
+        if out is not None:
+            self.sock.sendto(out, self._client)
+            self.packets_sent += 1
+        self._frame_no += 1  # advance even when dropped, so duplicate_prev is stale
         self._next_tx += n / self.rate
         if time.perf_counter() - self._next_tx > 0.25:  # fell far behind: resync
             self._next_tx = time.perf_counter()
@@ -786,17 +878,27 @@ class HardwareSim:
 
     modbus_port  None -> pseudo-terminal (POSIX).  Otherwise the simulator's end of a virtual
                  COM pair; then pass `client_port` (the other end) for make_config().
+    fail_prop    probability [0,1] that an outgoing UDP *data* packet is corrupted/dropped.
+    fail_prop_config  same for config acknowledgements (default 0 -> clean handshake).
     """
 
     def __init__(self, udp_host: str = "127.0.0.1", udp_port: int = 41401, modbus_port: str | None = None,
                  client_port: str | None = None, slave_id: int = 1, unit_id_policy: str = "lenient",
                  rate_scale: float = 1.0, reply_to_config: bool = True, seed: int = 0,
-                 speed_time_unit_s: float = 0.1, baud: int = 19200):  # fmt: skip
+                 speed_time_unit_s: float = 0.1, baud: int = 19200,
+                 fail_prop: float = 0.0):  # fmt: skip
+        fail_prop_config: float = fail_prop
         self.udp_host, self.slave_id, self.baud = udp_host, slave_id, baud
         self.drive = ServoDriveSim(speed_time_unit_s=speed_time_unit_s)
         self.model = SignalModel(self.drive, seed=seed)
         self.dlg = DLGSimulator(
-            udp_host, udp_port, self.model, rate_scale, reply_to_config=reply_to_config
+            udp_host,
+            udp_port,
+            self.model,
+            rate_scale,
+            reply_to_config=reply_to_config,
+            fail_prop=fail_prop,
+            fail_prop_config=fail_prop_config,
         )
         self._ep = (
             PtyEndpoint() if modbus_port is None else SerialEndpoint(modbus_port, baud)
@@ -833,6 +935,18 @@ class HardwareSim:
         """Back to the default signal for `ch` (or for all channels if None)."""
         self.model.clear_channel(ch)
 
+    def set_fail_prop(
+        self, fail_prop: float, fail_prop_config: float | None = None
+    ) -> None:
+        """Change failure-injection probabilities mid-test."""
+        self.dlg.fail_prop = float(fail_prop)
+        if fail_prop_config is not None:
+            self.dlg.fail_prop_config = float(fail_prop_config)
+
+    def reset_failures(self) -> None:
+        """Clear the DLG simulator's failure counters and injection log."""
+        self.dlg.reset_failures()
+
     def make_config(self, rate_hz: float = 200.0, bind_port: int = 41402, timeout_s: float = 1.0,
                     frames_per_packet: int = 1, cutoff: float = 0.1) -> dict[str, str]:  # fmt: skip
         """Config dict in the format Orchestrator expects (same keys parse_config() produces)."""
@@ -861,42 +975,3 @@ class HardwareSim:
                    SENSORS_FRAME_PER_PACKET=str(frames_per_packet), SENSORS_TIMEOUT=str(timeout_s),
                    MOTOR_PORT=self.client_port, MOTOR_ID=str(self.slave_id), MOTOR_BAUD_RATE=str(self.baud))  # fmt: skip
         return cfg
-
-
-def main():
-    ap = argparse.ArgumentParser(description="Run the hardware simulator standalone.")
-    ap.add_argument(
-        "--modbus-port",
-        help="simulator end of a virtual COM pair (default: pty on Linux/macOS)",
-    )
-    ap.add_argument(
-        "--client-port", help="the other end of the pair, only used to print the config"
-    )
-    ap.add_argument("--udp-host", default="127.0.0.1")
-    ap.add_argument("--udp-port", type=int, default=41401)
-    ap.add_argument("--slave-id", type=int, default=1)
-    ap.add_argument(
-        "--strict-ids",
-        action="store_true",
-        help="ignore requests whose unit id != slave id",
-    )
-    a = ap.parse_args()
-    rig = HardwareSim(a.udp_host, a.udp_port, a.modbus_port, a.client_port, a.slave_id,
-                      "strict" if a.strict_ids else "lenient")  # fmt: skip
-    with rig:
-        print(
-            f"Modbus RTU slave id {a.slave_id}: point MOTOR_PORT at  {rig.client_port}"
-        )
-        print(
-            f"UDP datalogger listening on {rig.dlg.address[0]}:{rig.dlg.address[1]}  (SENSORS_IP/SENSORS_PORT)"
-        )
-        print("Ctrl-C to quit")
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
-
-
-if __name__ == "__main__":
-    main()
