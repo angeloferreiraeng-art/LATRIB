@@ -7,7 +7,7 @@ import csv
 import numpy as np
 from queue import Queue, Empty, Full
 
-from motor import Motor, MotorConfig
+from motor import Motor, MotorConfig, peak_generator, peak_integral
 from sensors import Sensors, SensorsConfig
 from enum import Enum
 import math
@@ -43,7 +43,7 @@ class State(Enum):
     STOP = 5
 
 
-def parse_config(path: str | Path) -> Dict[str, str]:
+def parse_config(path: Path) -> Dict[str, str]:
     """Parse a key-value config file.
 
     Lines are split on the first ``=`` so values may contain ``=``.
@@ -55,6 +55,9 @@ def parse_config(path: str | Path) -> Dict[str, str]:
     Returns:
         Mapping of stripped keys to stripped values.
     """
+    path = Path(path)
+    if not path.is_file():
+        return None
     config: Dict[str, str] = {}
 
     with open(path, "r") as file:
@@ -106,6 +109,7 @@ class Orchestrator:
         """
         self.state = State.INIT
         if config is None:
+            print("No config given, using default values.")
             self.last_calibration: str = "NEVER"
             self.enables: List[bool] = [False for _ in range(N_CHANNELS)]
             self.ch_names: List[str] = ["UNDEFINED" for _ in range(N_CHANNELS)]
@@ -250,13 +254,21 @@ class Orchestrator:
 
     def commit_profile(self) -> None:
         """Upload the default velocity profile and transition to READY."""
-        self.motor.set_vel_profile()
-        self.state = State.READY
+        try:
+            self.motor.set_vel_profile()
+            self.state = State.READY
+        except Exception as e:
+            print(f"Received Exception:{e}")
+            self.state = State.ERROR
 
     def commit_pos_profile(self) -> None:
         """Upload the default position profile and transition to READY."""
-        self.motor.set_pos_profile()
-        self.state = State.READY
+        try:
+            self.motor.set_pos_profile()
+            self.state = State.READY
+        except Exception as e:
+            print(f"Received Exception:{e}")
+            self.state = State.ERROR
 
     def dump_config(self, path: Path) -> None:
         """Write the current configuration to a key-value file.
@@ -306,6 +318,14 @@ class Orchestrator:
         self.sensors.start()
         self.state = State.RUNNING
 
+    def velocity_func(self):
+        a = self.motor.a_factor
+        b = self.motor.b_factor
+        modif = peak_integral(a, b)
+        max_val = 1 / modif
+        omega = self.motor.get_omega()
+        return peak_generator(omega, a, b, max_rpm=max_val)
+
     def reset(self) -> None:
         """Flush the sensor buffers."""
         self.sensors.flush()
@@ -337,6 +357,20 @@ class Orchestrator:
                 out.append({"number": i, "name": self.ch_names[i]})
         return out
 
+    def read_enabled(self):
+        if self.state == State.RUNNING or self.state == State.CALIBRATING:
+            # self.sensors.flush()
+
+            frame = self.sensors.read()
+            out_frame = []
+            for i in range(N_CHANNELS):
+                if self.enables[i]:
+                    out_frame.append(frame[i])
+            return out_frame
+        else:
+            print("Sensors are not activated!")
+            return []
+
     def read_channel(self, channel: int) -> float:
         """Read the latest conditioned value from a channel.
 
@@ -351,7 +385,7 @@ class Orchestrator:
             are not active.
         """
         if self.state == State.RUNNING or self.state == State.CALIBRATING:
-            self.sensors.flush()
+            # self.sensors.flush()
             frame = self.sensors.read_nice()
             return frame[channel]
         else:

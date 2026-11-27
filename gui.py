@@ -1,27 +1,38 @@
-﻿import os
+﻿import csv
+import os
 import time
 import tkinter as tk
 from tkinter import ttk
 from collections import deque
 from pathlib import Path
 
+import numpy as np
+from scipy.integrate import quad
+
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
-from orchestrator import Orchestrator, State
+from orchestrator import Orchestrator, State, parse_config
 from simulator import HardwareSim
 
 OUT_DIR = Path.home()
 FILE_NAME = "data"
-OUT_CSV = os.path.join(OUT_DIR, f"{FILE_NAME}.csv")
+OUT_CSV = os.path.join(OUT_DIR, f"{FILE_NAME}.csv")  # valor padrão do output path
 RATE_HZ = 50
 
 WINDOW_SIZE = 200  # points visible on the plot
 INTERVAL_MS = 33  # ~30 FPS
 CSV_TAIL_HZ = 50  # how often to poll the CSV (optional)
 
-TIMER_SECONDS = 30 * 60  # countdown duration: 30 min
+TIMER_SECONDS = 30 * 60  # valor padrão do tempo de ensaio: 30 min
 AUTO_STOP_AT_ZERO = False  # set True to stop the orchestrator when the timer hits 0
+
+
+def safe_float(value: str):
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
 
 
 def format_mmss(seconds):
@@ -88,6 +99,19 @@ class GUI:
         self.root.title("Minimal supervisory")
 
         # ==================================================================
+        # STATE (definido antes das abas, pois elas usam estes atributos)
+        # ==================================================================
+        self._running = False
+        self._after_id = None
+        self._t0 = None
+        self._timer_t0 = None  # monotonic start of the countdown
+        self._timer_total = TIMER_SECONDS  # duração congelada no start()
+        self._t_data = deque(maxlen=WINDOW_SIZE)
+        self._y_data = deque(maxlen=WINDOW_SIZE)
+        self._csv_file = None  # output CSV handle (open while running)
+        self._csv_writer = None
+
+        # ==================================================================
         # PERSISTENT HEADER (shared across all tabs)
         # ==================================================================
         header = tk.Frame(self.root)
@@ -130,21 +154,18 @@ class GUI:
 
         self.tab_supervision = ttk.Frame(self.notebook)
         self.tab_calibration = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_supervision, text="Supervision")
-        self.notebook.add(self.tab_calibration, text="Calibration")
+        self.tab_plan = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_supervision, text="Supervisório")
+        self.notebook.add(self.tab_calibration, text="Calibração")
+        self.notebook.add(self.tab_plan, text="Plano de Ensaio")
 
         self._build_supervision_tab()
         self._build_calibration_tab()
+        self._build_plan_tab()
         self._populate_channels()
-        # ==================================================================
-        # ORCHESTRATOR + STATE
-        # ==================================================================
-        self._running = False
-        self._after_id = None
-        self._t0 = None
-        self._timer_t0 = None  # monotonic start of the countdown
-        self._t_data = deque(maxlen=WINDOW_SIZE)
-        self._y_data = deque(maxlen=WINDOW_SIZE)
+
+        # sincroniza o relógio do cabeçalho com o tempo definido na aba Plano
+        self._on_time_changed()
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -158,14 +179,9 @@ class GUI:
         bar = tk.Frame(tab)
         bar.pack(fill="x", padx=6, pady=6)
 
-        tk.Label(bar, text="Output path:").pack(side="left")
-        self.output_path = tk.Entry(bar, width=32)
-        self.output_path.insert(0, OUT_CSV)
-        self.output_path.pack(side="left", padx=6)
-
         tk.Button(bar, text="Start", command=self.start).pack(side="left", padx=2)
         tk.Button(bar, text="Stop", command=self.stop).pack(side="left", padx=2)
-        tk.Button(bar, text="Velocity mode", command=self.orch.commit_profile).pack(
+        tk.Button(bar, text="Velocity mode", command=self.velocity_mode).pack(
             side="left", padx=2
         )
         tk.Button(bar, text="Position mode", command=self.orch.commit_pos_profile).pack(
@@ -208,18 +224,154 @@ class GUI:
         configs.pack(fill="x", padx=10, pady=8)
 
         ttk.Label(configs, text="Config path:").grid(row=0, column=0, sticky="w", **pad)
-        self.cfg_path_entry = ttk.Entry(configs, width=10).grid(
-            row=0, column=1, sticky="w", **pad
-        )
+        self.cfg_path_entry = ttk.Entry(configs, width=10)
+        self.cfg_path_entry.grid(row=0, column=1, sticky="w", **pad)
         ttk.Button(configs, text="Adicional Canal", command=self.add_channel).grid(
             row=0, column=2, **pad
         )
         # --- Action buttons ---
         actions = tk.Frame(tab)
         actions.pack(fill="x", padx=10, pady=12)
-        ttk.Button(actions, text="Save calibration").pack(side="left", padx=4)
+        ttk.Button(actions, text="Save calibration", command=self.save_config).pack(
+            side="left", padx=4
+        )
         ttk.Button(actions, text="Load calibration").pack(side="left", padx=4)
         ttk.Button(actions, text="Reset to defaults").pack(side="left", padx=4)
+
+    # ------------------------------------------------------------------
+    # PLAN TAB
+    # ------------------------------------------------------------------
+    def _build_plan_tab(self):
+        tab = self.tab_plan
+        pad = {"padx": 8, "pady": 4}
+
+        # --- config file ---
+        profile = ttk.LabelFrame(tab, text="Configuration")
+        profile.pack(fill="x", padx=10, pady=8)
+
+        ttk.Label(profile, text="Fator A:").grid(row=0, column=0, sticky="w", **pad)
+        self.a_factor_entry = ttk.Entry(profile, width=10)
+        self.a_factor_entry.grid(row=0, column=1, sticky="w", **pad)
+
+        ttk.Label(profile, text="Fator B:").grid(row=0, column=2, sticky="w", **pad)
+        self.b_factor_entry = ttk.Entry(profile, width=10)
+        self.b_factor_entry.grid(row=0, column=3, sticky="w", **pad)
+
+        # --- tempo de ensaio (em minutos) ---
+        ttk.Label(profile, text="Tempo de ensaio [min]:").grid(
+            row=1, column=0, sticky="w", **pad
+        )
+        self.time_entry = ttk.Entry(profile, width=10)
+        self.time_entry.insert(0, str(TIMER_SECONDS // 60))
+        self.time_entry.grid(row=1, column=1, sticky="w", **pad)
+        self.time_entry.bind("<KeyRelease>", lambda e: self._on_time_changed())
+
+        # --- output path ---
+        ttk.Label(profile, text="Output path:").grid(row=2, column=0, sticky="w", **pad)
+        self.output_path = ttk.Entry(profile, width=50)
+        self.output_path.insert(0, OUT_CSV)
+        self.output_path.grid(row=2, column=1, columnspan=3, sticky="we", **pad)
+
+        # Bind changes on A and B entries to redraw the plot
+        self.a_factor_entry.bind("<KeyRelease>", lambda e: self._update_curve_view())
+        self.b_factor_entry.bind("<KeyRelease>", lambda e: self._update_curve_view())
+
+        # --- embedded plot area ---
+        self.plan_fig = Figure(figsize=(10, 6), dpi=100)
+        self.plan_ax = self.plan_fig.add_subplot(211)
+        self.plan_ax_fft = self.plan_fig.add_subplot(212)
+        self.plan_canvas = FigureCanvasTkAgg(self.plan_fig, master=tab)
+        self.plan_canvas.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=6)
+
+        # Initial draw (only if both fields have values)
+        self.root.after(100, self._update_curve_view)
+
+    def _update_curve_view(self):
+        a = safe_float(self.a_factor_entry.get())
+        b = safe_float(self.b_factor_entry.get())
+        self.orch.profile_factors(a, b)
+        f = self.orch.velocity_func()
+
+        x_0 = 0
+        x_1 = np.pi / self.orch.motor.get_omega()
+        # --- 1. Calculate the definite integral ---
+        integral_value, error = quad(f, x_0, x_1)
+        print(f"Integral of f(x) from {x_0} to {x_1} = {integral_value:.6f}")
+        print(f"Estimated error: {error:.2e}")
+
+        # --- 2. Prepare data for plotting ---
+        x = np.linspace(x_0, x_1, 10000)
+        y = f(x)
+
+        # --- 3. Clear and redraw the two panels ---
+        self.plan_ax.clear()
+        self.plan_ax_fft.clear()
+
+        # ----- Top panel: original function -----
+        self.plan_ax.plot(x, y, "b-", linewidth=2, label=r"$f(x)$")
+
+        # Fill the actual integrated interval [x_0, x_1]
+        self.plan_ax.fill_between(
+            x,
+            y,
+            alpha=0.3,
+            color="skyblue",
+            label=f"Area = {integral_value:.4f}",
+        )
+
+        # Only draw the a/b markers if they fall inside the plotted range —
+        # otherwise axvline forces matplotlib to expand the x-axis.
+        if x_0 <= a <= x_1:
+            self.plan_ax.axvline(a, color="gray", linestyle="--", alpha=0.7)
+        if x_0 <= b <= x_1:
+            self.plan_ax.axvline(b, color="gray", linestyle="--", alpha=0.7)
+        self.plan_ax.axhline(0, color="black", linewidth=0.8)
+
+        self.plan_ax.set_xlabel("x")
+        self.plan_ax.set_ylabel("f(x)")
+        self.plan_ax.set_title(
+            f"Function Plot and Definite Integral on [{x_0:.2f}, {x_1:.2f}]"
+        )
+        self.plan_ax.legend(loc="upper left")
+        self.plan_ax.grid(True, alpha=0.3)
+
+        # Lock the x-axis to the integration interval AFTER all drawing calls,
+        # so autoscaling can't rescale it when factors a/b change.
+        self.plan_ax.set_xlim(x_0, x_1)
+
+        # ----- Bottom panel: FFT (one-sided amplitude spectrum) -----
+        dx = x[1] - x[0]
+        N = len(y)
+
+        Y = np.fft.fft(y)
+        freqs = np.fft.fftfreq(N, d=dx)
+
+        mask = freqs >= 0
+        freqs_pos = freqs[mask]
+        amp_pos = (2.0 / N) * np.abs(Y[mask])
+        # DC bin is not doubled in a one-sided spectrum
+        amp_pos[0] /= 2.0
+
+        self.plan_ax_fft.plot(freqs_pos, amp_pos, "r-", linewidth=1.5)
+        self.plan_ax_fft.set_xlabel("Frequency (cycles per unit x)")
+        self.plan_ax_fft.set_ylabel("Amplitude")
+        self.plan_ax_fft.set_title("FFT of f(x) (one-sided amplitude spectrum)")
+        self.plan_ax_fft.grid(True, alpha=0.3)
+
+        if len(amp_pos) > 1:
+            peak_idx = np.argmax(amp_pos[1:]) + 1
+            peak_f = freqs_pos[peak_idx]
+            peak_a = amp_pos[peak_idx]
+            self.plan_ax_fft.annotate(
+                f"peak ≈ {peak_f:.3f}\n(period ≈ {1 / peak_f:.2f})",
+                xy=(peak_f, peak_a),
+                xytext=(peak_f + 0.05, peak_a * 0.8),
+                arrowprops=dict(arrowstyle="->", color="black"),
+                fontsize=9,
+            )
+
+        self.plan_fig.tight_layout()
+        self.plan_canvas.draw_idle()
 
     def _populate_channels(self):
         # Clear existing channel frames before repopulating
@@ -301,16 +453,56 @@ class GUI:
         self.canvas.draw_idle()
 
     # ------------------------------------------------------------------
+    # CSV OUTPUT
+    # ------------------------------------------------------------------
+    def _open_csv(self):
+        """Open the output file (fresh) and write the header row with the
+        channel names."""
+        path = Path(self.output_path.get().strip() or OUT_CSV)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._csv_file = open(path, "w", newline="", encoding="utf-8")
+        self._csv_writer = csv.writer(self._csv_file)
+        # header: channel names, in the same order as the frame
+        self._csv_writer.writerow([ch["name"] for ch in self.orch.channels()])
+        self._csv_file.flush()
+
+    def _write_csv_frame(self, frame):
+        """Append one frame as a CSV row."""
+        if self._csv_writer is None:
+            return
+        if isinstance(frame, dict):
+            frame = frame.values()
+        self._csv_writer.writerow(np.atleast_1d(list(frame)).tolist())
+        self._csv_file.flush()
+
+    def _close_csv(self):
+        if self._csv_file is not None:
+            try:
+                self._csv_file.close()
+            finally:
+                self._csv_file = None
+                self._csv_writer = None
+
+    # ------------------------------------------------------------------
     # TIMER
     # ------------------------------------------------------------------
+    def _timer_seconds(self):
+        """Duração do ensaio em segundos, lida da aba Plano de Ensaio (entrada em minutos)."""
+        return max(0.0, safe_float(self.time_entry.get()) * 60)
+
+    def _on_time_changed(self):
+        # Só atualiza o display se não houver ensaio em andamento
+        if not self._running:
+            self.timer_label.config(text=format_mmss(self._timer_seconds()), fg="black")
+
     def _reset_timer(self):
         self._timer_t0 = None
-        self.timer_label.config(text=format_mmss(TIMER_SECONDS), fg="black")
+        self.timer_label.config(text=format_mmss(self._timer_seconds()), fg="black")
 
     def _update_timer(self):
         if self._timer_t0 is None:
             return
-        remaining = TIMER_SECONDS - (time.monotonic() - self._timer_t0)
+        remaining = self._timer_total - (time.monotonic() - self._timer_t0)
         self.timer_label.config(
             text=format_mmss(remaining + 0.999),  # round up so 00:00 only at zero
             fg="red" if remaining <= 0 else "black",
@@ -325,12 +517,16 @@ class GUI:
         if not self.orch.start():
             return
 
+        self._close_csv()  # in case of a previous run
+        self._open_csv()
+
         self._t0 = time.time()
         self._t_data.clear()
         self._y_data.clear()
         self.data.clear()
         self.data.extend([0.0] * WINDOW_SIZE)
 
+        self._timer_total = self._timer_seconds()  # congela a duração ao iniciar
         self._running = True
         self._reset_timer()
         self._timer_t0 = time.monotonic()
@@ -338,16 +534,19 @@ class GUI:
     def stop(self, reset_timer=True):
         self.orch.stop()
         self._running = False
+        self._close_csv()
         if reset_timer:
             pass  # self._reset_timer()
         else:
             self._timer_t0 = None  # freeze the display (at 00:00)
 
     def velocity_mode(self):
+        a = safe_float(self.a_factor_entry.get())
+        b = safe_float(self.b_factor_entry.get())
+        self.orch.profile_factors(a, b)
         self.orch.commit_profile()
 
     def add_channel(self):
-        print("addin")
         result = ask_value(self.root, "nome", "coiso")
         if result and result.get("channel"):
             # Add the channel to the orchestrator, then refresh the UI
@@ -369,6 +568,8 @@ class GUI:
         try:
             if self._running:
                 ch = self._selected_channel_number()
+                frame = self.orch.read_enabled()
+                self._write_csv_frame(frame)  # append this frame to the CSV
                 if ch is not None:
                     val = self.orch.read_channel(ch)
                     self.data.append(val)
@@ -422,6 +623,10 @@ class GUI:
 
 
 def main():
+    config = parse_config("config.txt")
+    # gui = GUI(config)
+    # gui.run()
+    # exit()
     with HardwareSim(fail_prop=0.5) as rig:
         rig.set_channel(1, 500, 10)
         gui = GUI(rig.make_config())

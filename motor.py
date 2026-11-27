@@ -576,8 +576,8 @@ class Motor:
                 lengths are inconsistent.
         """
         assert len(times) <= 8, "TIMES ARRAY CANT BE BIGGER THAN 8 ELEMENTS"
-        v_plus: List[int] = []
-        v_minus: List[int] = []
+        v_plus: list[int] = []
+        v_minus: list[int] = []
         t: float = 0.0
         for dt in times:
             t += dt / 10
@@ -599,6 +599,7 @@ class Motor:
         stroke and 1-second segments. On return, :attr:`mode` is
         ``"VEL_CTRL"``.
         """
+        print(f"SETTING RPOFILE: FACTOR A: {self.a_factor} ; FACTOR B: {self.b_factor}")
         NUM_SEGMENTS: int = 8
         SEG_TIME: float = 1
         times: np.ndarray = np.ones(NUM_SEGMENTS) * SEG_TIME
@@ -678,6 +679,14 @@ class Motor:
             self._write(ADDR_MULTI_SPEED_FIRST + i, d)
             v: int = self._read(ADDR_MULTI_SPEED_FIRST + i)
             assert d == v, f"VALUE WRITE ERROR: TRIED TO WRITE {d}, READ BACK IS {v}"
+
+    def get_omega(self):
+        NUM_SEGMENTS: int = 8
+        SEG_TIME: float = 1
+        times: np.ndarray = np.ones(NUM_SEGMENTS) * SEG_TIME
+        half_period: float = float(np.sum(times) / 10)
+        omega: float = np.pi / half_period
+        return omega
 
     def set_pos_profile(self) -> None:
         """Build and upload a default 8-segment position profile.
@@ -772,6 +781,9 @@ class Motor:
             addr += 1
 
         _ = self._read_many(ADDR_MULTI_POS_FIRST, 5 * len(times))
+
+    def get_factors(self):
+        return self.a_factor, self.b_factor
 
 
 if __name__ == "__main__":

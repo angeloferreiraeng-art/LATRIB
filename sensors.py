@@ -748,7 +748,6 @@ class Sensors:
             f"Channel {idx}: lowest noise peak at {lowest_noise_freq} Hz -> "
             f"cutoff set to {new_cutoff:.2f} Hz"
         )
-        new_cutoff = 15.0
         self.filters[idx] = BiQuadFilter(self.rate_hz, new_cutoff, 1.0)
 
     def start(self) -> None:
@@ -836,9 +835,6 @@ class Sensors:
             val_f: float = f.process(r)
             val_c: float = c.process(val_f)
             out_data.append(val_c)
-            if i == 3:
-                print(f"raw {r}, filtered {val_f}, converter {val_c}")
-
         return np.array(out_data)
 
     def read_nice(self) -> np.ndarray:
