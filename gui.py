@@ -15,9 +15,10 @@ from orchestrator import Orchestrator, State, parse_config
 from simulator import HardwareSim
 
 
-OUT_DIR = os.path.join(Path.home(),"Desktop")
+OUT_DIR = os.path.join(Path.home(), "Desktop")
 FILE_NAME = "reciprocating_data"
-OUT_CSV = os.path.join(OUT_DIR, f"{FILE_NAME}.csv")  # valor padrão do output path
+# valor padrão do output path
+OUT_CSV = os.path.join(OUT_DIR, f"{FILE_NAME}.csv")
 RATE_HZ = 50
 
 DEFAULT_WINDOW_SIZE = 200  # points visible on the plot
@@ -38,6 +39,7 @@ def safe_float(value: str):
 def format_mmss(seconds):
     seconds = max(0, int(seconds))
     return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
 
 def walking_fft(signal: deque, window_size: int) -> deque:
     """Compute a walking FFT over a sliding window of length `window_size`.
@@ -70,6 +72,7 @@ def walking_fft(signal: deque, window_size: int) -> deque:
             result.append(spectrum)
 
     return result
+
 
 def walking_average(signal: deque[float], window_size: int) -> deque[float]:
     """Return a deque of the same length containing the sliding window average."""
@@ -236,8 +239,10 @@ class GUI:
         bar = tk.Frame(tab)
         bar.pack(fill="x", padx=6, pady=6)
 
-        tk.Button(bar, text="Start", command=self.start).pack(side="left", padx=2)
-        tk.Button(bar, text="Stop", command=self.stop).pack(side="left", padx=2)
+        tk.Button(bar, text="Start", command=self.start).pack(
+            side="left", padx=2)
+        tk.Button(bar, text="Stop", command=self.stop).pack(
+            side="left", padx=2)
         tk.Button(bar, text="Velocity mode", command=self.velocity_mode).pack(
             side="left", padx=2
         )
@@ -251,7 +256,8 @@ class GUI:
             bar, textvariable=self.channel_var, state="readonly", width=22
         )
         self.channel_combo.pack(side="left", padx=2)
-        self.channel_combo.bind("<<ComboboxSelected>>", self._on_channel_selected)
+        self.channel_combo.bind("<<ComboboxSelected>>",
+                                self._on_channel_selected)
         self._refresh_channel_combo()
 
         # ----- plot -----
@@ -260,11 +266,11 @@ class GUI:
         self.canvas = FigureCanvasTkAgg(fig, master=tab)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=6)
 
-        rate=self.orch.sensors.rate_hz
-        WINDOW_TIME=10 #10 seconds
-        self.w_size=int(WINDOW_TIME*rate)
+        rate = self.orch.sensors.rate_hz
+        WINDOW_TIME = 10  # 10 seconds
+        self.w_size = int(WINDOW_TIME*rate)
         self.data = deque([0.0] * self.w_size, maxlen=self.w_size)
-        x_data=np.linspace(0,WINDOW_TIME,self.w_size)
+        x_data = np.linspace(0, WINDOW_TIME, self.w_size)
         (self.line_1,) = self.ax.plot(
             x_data, self.data, color="#007acc", linewidth=1.8
         )
@@ -284,7 +290,8 @@ class GUI:
         configs = ttk.LabelFrame(tab, text="Configuration")
         configs.pack(fill="x", padx=10, pady=8)
 
-        ttk.Label(configs, text="Config path:").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Label(configs, text="Config path:").grid(
+            row=0, column=0, sticky="w", **pad)
         self.cfg_path_entry = ttk.Entry(configs, width=10)
         self.cfg_path_entry.grid(row=0, column=1, sticky="w", **pad)
         self.cfg_path_entry.insert(0, "config.txt")
@@ -311,11 +318,13 @@ class GUI:
         profile = ttk.LabelFrame(tab, text="Configuration")
         profile.pack(fill="x", padx=10, pady=8)
 
-        ttk.Label(profile, text="Fator A:").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Label(profile, text="Fator A:").grid(
+            row=0, column=0, sticky="w", **pad)
         self.a_factor_entry = ttk.Entry(profile, width=10)
         self.a_factor_entry.grid(row=0, column=1, sticky="w", **pad)
 
-        ttk.Label(profile, text="Fator B:").grid(row=0, column=2, sticky="w", **pad)
+        ttk.Label(profile, text="Fator B:").grid(
+            row=0, column=2, sticky="w", **pad)
         self.b_factor_entry = ttk.Entry(profile, width=10)
         self.b_factor_entry.grid(row=0, column=3, sticky="w", **pad)
 
@@ -332,14 +341,18 @@ class GUI:
         self.time_entry.bind("<KeyRelease>", lambda e: self._on_time_changed())
 
         # --- output path ---
-        ttk.Label(profile, text="Output path:").grid(row=2, column=0, sticky="w", **pad)
+        ttk.Label(profile, text="Output path:").grid(
+            row=2, column=0, sticky="w", **pad)
         self.output_path = ttk.Entry(profile, width=50)
         self.output_path.insert(0, OUT_CSV)
-        self.output_path.grid(row=2, column=1, columnspan=3, sticky="we", **pad)
+        self.output_path.grid(
+            row=2, column=1, columnspan=3, sticky="we", **pad)
 
         # Bind changes on A and B entries to redraw the plot
-        self.a_factor_entry.bind("<KeyRelease>", lambda e: self._update_curve_view())
-        self.b_factor_entry.bind("<KeyRelease>", lambda e: self._update_curve_view())
+        self.a_factor_entry.bind(
+            "<KeyRelease>", lambda e: self._update_curve_view())
+        self.b_factor_entry.bind(
+            "<KeyRelease>", lambda e: self._update_curve_view())
 
         # --- embedded plot area ---
         self.plan_fig = Figure(figsize=(10, 6), dpi=100)
@@ -417,7 +430,8 @@ class GUI:
         self.plan_ax_fft.plot(freqs_pos, amp_pos, "r-", linewidth=1.5)
         self.plan_ax_fft.set_xlabel("Frequency (cycles per unit x)")
         self.plan_ax_fft.set_ylabel("Amplitude")
-        self.plan_ax_fft.set_title("FFT of f(x) (one-sided amplitude spectrum)")
+        self.plan_ax_fft.set_title(
+            "FFT of f(x) (one-sided amplitude spectrum)")
         self.plan_ax_fft.grid(True, alpha=0.3)
 
         if len(amp_pos) > 1:
@@ -469,7 +483,8 @@ class GUI:
             ttk.Button(
                 ch_frame,
                 text="Capturar Sinal",
-                command=lambda e=ref_entry: self.orch.ref_point(safe_float(e.get())),
+                command=lambda e=ref_entry: self.orch.ref_point(
+                    safe_float(e.get())),
             ).grid(row=1, column=2, **pad)
 
     # ------------------------------------------------------------------
@@ -600,18 +615,21 @@ class GUI:
     def _on_time_changed(self):
         # Só atualiza o display se não houver ensaio em andamento
         if not self._running:
-            self.timer_label.config(text=format_mmss(self._timer_seconds()), fg="black")
+            self.timer_label.config(text=format_mmss(
+                self._timer_seconds()), fg="black")
 
     def _reset_timer(self):
         self._timer_t0 = None
-        self.timer_label.config(text=format_mmss(self._timer_seconds()), fg="black")
+        self.timer_label.config(text=format_mmss(
+            self._timer_seconds()), fg="black")
 
     def _update_timer(self) -> bool:
         if self._timer_t0 is None:
             return False
         remaining = self._timer_total - (time.monotonic() - self._timer_t0)
         self.timer_label.config(
-            text=format_mmss(remaining + 0.999),  # round up so 00:00 only at zero
+            # round up so 00:00 only at zero
+            text=format_mmss(remaining + 0.999),
             fg="red" if remaining <= 0 else "black",
         )
         if remaining <= 0 and self._running:
@@ -681,7 +699,7 @@ class GUI:
     def redraw(self):
         try:
             if self._running:
-                frames = np.asarray(self.orch.read_many_enabled())
+                frames = self.orch.read_many()
                 self._write_csv_frames(frames)
 
                 col_idx = self._selected_enabled_column()
@@ -698,7 +716,8 @@ class GUI:
                         self._t_data.append(now)
                         self._y_data.append(val)
 
-                    self.line_1.set_data(range(len(self.data)), list(self.data))
+                    self.line_1.set_data(
+                        range(len(self.data)), list(self.data))
                     self.ax.relim()
                     self.ax.autoscale_view(scalex=False, scaley=True)
                     self.canvas.draw_idle()
@@ -723,7 +742,8 @@ class GUI:
                     fill = "green"
                 case State.RUNNING:
                     fill = "yellow"
-            self.state_canvas.itemconfig(self.orch_state_text, text=orc_state.name)
+            self.state_canvas.itemconfig(
+                self.orch_state_text, text=orc_state.name)
             self.state_canvas.itemconfig(self.orch_state_rect, fill=fill)
         except Exception as e:
             print("redraw error:", e)
@@ -745,11 +765,11 @@ class GUI:
 
 
 def main():
-    config = parse_config("config.txt")
+    # config = parse_config("config.txt")
     # gui = GUI(config)
     # gui.run()
     # exit()
-    with HardwareSim(fail_prop=0.5) as rig:
+    with HardwareSim(fail_prop=0.0) as rig:
         rig.set_channel(1, 500, 10)
         gui = GUI(rig.make_config())
         gui.run()

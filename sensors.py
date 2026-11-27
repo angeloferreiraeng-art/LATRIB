@@ -30,9 +30,11 @@ OP_SETCHCFG_R: int = 0x2003
 _HDR: struct.Struct = struct.Struct("<HH")  # PacketCode, Reserved
 _RESP: struct.Struct = struct.Struct("<HHH")  # PacketCode, Reserved, Error
 _ACQ_SETUP: struct.Struct = struct.Struct("<HHfHHHHhh8h")
-_ACQ_SETUP_R: struct.Struct = struct.Struct("<HHHf")  # + Error, SampleFreq real
+_ACQ_SETUP_R: struct.Struct = struct.Struct(
+    "<HHHf")  # + Error, SampleFreq real
 _SET_CH: struct.Struct = struct.Struct("<HHH6hHHH")
-_DATA_HDR: struct.Struct = struct.Struct("<HHiifhhiii")  # até Samples[] (32 bytes)
+_DATA_HDR: struct.Struct = struct.Struct(
+    "<HHiifhhiii")  # até Samples[] (32 bytes)
 
 DATA_HEADER_SIZE: int = _DATA_HDR.size
 DATA_MAX_SAMPLES: int = 720
@@ -106,7 +108,8 @@ def parse_pack(
     flat: list[int] = list(
         struct.unpack_from("<%dh" % (bursts * stride), bytes, DATA_HEADER_SIZE)
     )
-    data: list[list[int]] = [flat[b * stride : (b + 1) * stride] for b in range(bursts)]
+    data: list[list[int]] = [
+        flat[b * stride: (b + 1) * stride] for b in range(bursts)]
     transposed: list[list[int]] = [list(row) for row in zip(*data)]
     assert len(transposed) == n_channels, (
         "ERROR: Transposed parsed frame has wrong size"
@@ -142,7 +145,8 @@ class ChannelConfig:
     cutoff_freq: float = 0.1
     resonance: float = 0.7071
     t_sensor: int = (
-        4  # 0 tensão, 1 corrente, 2 ponte completa, 3 1/4, 4 1/2 ponte, 5 ICP...
+        # 0 tensão, 1 corrente, 2 ponte completa, 3 1/4, 4 1/2 ponte, 5 ICP...
+        4
     )
     i_lpf: int = 0
     i_gain_idx: int = 5  # índice em GAIN_VALUES (5 -> 300)
@@ -166,7 +170,8 @@ class ChannelConfig:
             cutoff_freq=0.1,
             resonance=0.7071,
             t_sensor=(
-                4  # 0 tensão, 1 corrente, 2 ponte completa, 3 1/4, 4 1/2 ponte, 5 ICP...
+                # 0 tensão, 1 corrente, 2 ponte completa, 3 1/4, 4 1/2 ponte, 5 ICP...
+                4
             ),
             i_lpf=0,
             i_gain_idx=5,  # índice em GAIN_VALUES (5 -> 300)
@@ -191,7 +196,8 @@ class ChannelConfig:
             cutoff_freq=0.1,
             resonance=0.7071,
             t_sensor=(
-                1  # 0 tensão, 1 corrente, 2 ponte completa, 3 1/4, 4 1/2 ponte, 5 ICP...
+                # 0 tensão, 1 corrente, 2 ponte completa, 3 1/4, 4 1/2 ponte, 5 ICP...
+                1
             ),
             i_lpf=0,
             i_gain_idx=0,  # índice em GAIN_VALUES (5 -> 300)
@@ -414,34 +420,34 @@ class BiQuadFilter:
         return output
 
     def process_block(self, inp: np.ndarray) -> np.ndarray:
-            """Processa um bloco de amostras 1D através do filtro.
+        """Processa um bloco de amostras 1D através do filtro.
 
-            Args:
-                inp: Array 1D de amostras de entrada.
+        Args:
+            inp: Array 1D de amostras de entrada.
 
-            Returns:
-                Array 1D ``np.ndarray`` (``dtype=float``) com as amostras filtradas.
-            """
-            samples = np.asarray(inp, dtype=float).ravel()
-            n = samples.shape[0]
-            if n == 0:
-                return np.empty(0, dtype=float)
+        Returns:
+            Array 1D ``np.ndarray`` (``dtype=float``) com as amostras filtradas.
+        """
+        samples = np.asarray(inp, dtype=float).ravel()
+        n = samples.shape[0]
+        if n == 0:
+            return np.empty(0, dtype=float)
 
-            a0, a1, a2, a3, a4 = self.a0, self.a1, self.a2, self.a3, self.a4
-            x1, x2, y1, y2 = self.x1, self.x2, self.y1, self.y2
-            out = np.empty(n, dtype=float)
+        a0, a1, a2, a3, a4 = self.a0, self.a1, self.a2, self.a3, self.a4
+        x1, x2, y1, y2 = self.x1, self.x2, self.y1, self.y2
+        out = np.empty(n, dtype=float)
 
-            for i in range(n):
-                xi = samples[i]
-                yi = a0 * xi + a1 * x1 + a2 * x2 - a3 * y1 - a4 * y2
-                out[i] = yi
-                x2 = x1
-                x1 = xi
-                y2 = y1
-                y1 = yi
+        for i in range(n):
+            xi = samples[i]
+            yi = a0 * xi + a1 * x1 + a2 * x2 - a3 * y1 - a4 * y2
+            out[i] = yi
+            x2 = x1
+            x1 = xi
+            y2 = y1
+            y1 = yi
 
-            self.x1, self.x2, self.y1, self.y2 = x1, x2, y1, y2
-            return out
+        self.x1, self.x2, self.y1, self.y2 = x1, x2, y1, y2
+        return out
 
     def _set_coefficients(
         self, a0: float, a1: float, a2: float, b0: float, b1: float, b2: float
@@ -489,7 +495,8 @@ class Sensors:
             RuntimeError: Se o envio UDP for incompleto ou a configuração de
                 algum canal for truncada.
         """
-        print(f"Connecting to Datalogger at IP {config.ip_address} PORT {config.port}")
+        print(f"Connecting to Datalogger at IP {
+              config.ip_address} PORT {config.port}")
         self.address: tuple[str, int] = (config.ip_address, config.port)
         self.rate_hz: float = config.rate_hz
         self.samples_per_pack: int = config.n_bursts_pack
@@ -620,13 +627,15 @@ class Sensors:
             if code != OP_ACQSETUP_R:
                 continue
             assert len(resp) == _ACQ_SETUP_R.size, (
-                f"resposta AcqSetup truncada, expect :{_ACQ_SETUP_R.size}, got {len(resp)}"
+                f"resposta AcqSetup truncada, expect :{
+                    _ACQ_SETUP_R.size}, got {len(resp)}"
             )
             _, _, err, real = _ACQ_SETUP_R.unpack_from(resp)
             if err != 0:
                 raise RuntimeError(f"AcqSetup falhou (erro {err})")
             if abs(real - rate_hz) > 1e-6 * max(rate_hz, 1.0):
-                print(f"frequência pedida {rate_hz:.3f} Hz, real {real:.3f} Hz")
+                print(f"frequência pedida {
+                      rate_hz:.3f} Hz, real {real:.3f} Hz")
             return real
 
     def acq_setup(self, rate_hz: float, n_bursts: int = 1) -> float:
@@ -670,9 +679,9 @@ class Sensors:
     def calibrate_filter(
         self,
         idx: int,
-        n_samples: int = 256,
-        min_freq: float = 2.0,
-        max_cutoff: float = 100,
+        n_samples: int = 2048,
+        min_freq: float = 1.0,
+        max_cutoff: float = 30,
     ) -> None:
         """Estima a frequência de corte ideal para um canal a partir do ruído.
 
@@ -687,18 +696,15 @@ class Sensors:
             max_cutoff: Cutoff máximo permitido (Hz).
         """
         self.flush()
-
-        # Collect n_samples frames, each containing n_channel values
-        samples: np.ndarray = np.array(
-            [self.read_raw() for _ in range(n_samples)], dtype=float
-        )
+        samples = self.read_many_raw(n_samples)
         signal_data: np.ndarray = samples[:, idx]
 
         # Detrend, window, and compute one-sided FFT magnitude
         detrended: np.ndarray = signal_data - np.mean(signal_data)
         windowed: np.ndarray = detrended * np.hanning(len(detrended))
         fft_vals: np.ndarray = np.abs(np.fft.rfft(windowed))
-        freqs: np.ndarray = np.fft.rfftfreq(len(detrended), d=1.0 / self.rate_hz)
+        freqs: np.ndarray = np.fft.rfftfreq(
+            len(detrended), d=1.0 / self.rate_hz)
 
         # Focus on frequencies above min_freq to ignore near-DC drift
         mask: np.ndarray = freqs >= min_freq
@@ -709,7 +715,8 @@ class Sensors:
         if len(valid_mags) >= 3:
             median_mag: float = np.median(valid_mags)
             mad: float = np.median(np.abs(valid_mags - median_mag))
-            threshold: float = max(median_mag + 3.0 * mad, 0.15 * np.max(valid_mags))
+            threshold: float = max(
+                median_mag + 3.0 * mad, 0.15 * np.max(valid_mags))
 
             peaks: np.ndarray = (
                 np.where(
@@ -795,7 +802,7 @@ class Sensors:
             r: float = raw[i]
             f: BiQuadFilter = self.filters[i]
             c: Converter = self.converters[i]
-            #val_f: float = f.process(r)
+            # val_f: float = f.process(r)
             val_c: float = c.process(r)
             out_data.append(val_c)
         return np.array(out_data)
@@ -837,133 +844,46 @@ class Sensors:
             f"Reached read retry limit of {limit}, connection is likely dead."
         )
 
-    def read_unchecked(self) -> np.ndarray:
-        """Lê o próximo frame sem tratamento de erro.
-
-        Returns:
-            Array de ``N_CHANNELS`` valores brutos (média dos bursts).
-
-        Raises:
-            socket.timeout: Se nenhum pacote chegar dentro do timeout.
-        """
-        raw: bytes
-        raw, _ = self.sock.recvfrom(RECV_BUFFER)
-        blocks: np.ndarray = parse_pack(raw, N_CHANNELS)
-        out_data: np.ndarray = np.nan * np.ones(N_CHANNELS)
-        for i in range(N_CHANNELS):
-            b: float = float(np.mean(blocks[i]))
-            out_data[i] = b
-        return out_data
-
-    def read_many_unchecked(self, drain_timeout: float = 0.0) -> np.ndarray:
-        prev_timeout = self.sock.gettimeout()
-        frames: list[np.ndarray] = []
-
-        try:
-            self.sock.settimeout(drain_timeout)
-            while True:
-                try:
-                    raw, _ = self.sock.recvfrom(RECV_BUFFER)
-                except (socket.timeout, BlockingIOError):
-                    break
-                blocks: np.ndarray = parse_pack(raw, N_CHANNELS)
-                out_data: np.ndarray = np.full(N_CHANNELS, np.nan, dtype=float)
-                for i in range(N_CHANNELS):
-                    out_data[i] = float(np.mean(blocks[i]))
-                frames.append(out_data)
-        finally:
-            self.sock.settimeout(prev_timeout)
-
-        if not frames:
-            return np.empty((0, N_CHANNELS), dtype=float)
-        return np.vstack(frames)
-
-
     def read_many_raw(
         self,
         n_samples: int = 32,
         log_errors=True
     ) -> np.ndarray:
-        """Lê os frames disponíveis via ``read_many_unchecked``, ignorando exceções.
-
-        Args:
-            drain_timeout: Timeout temporário (em segundos) repassado a
-                ``read_many_unchecked``.
-            max_errors: Limite de tentativas/exceções antes de abortar.
-            allow_empty: Se ``True``, retorna ``(0, N_CHANNELS)`` imediatamente
-                quando nenhum frame estiver disponível; se ``False``, tenta novamente
-                até obter ao menos um frame.
+        """Reads raw samples from the socket until ``n_samples`` per channel
+        have been collected (samples, not bursts).
 
         Returns:
-            Array 2D de formato ``(n_frames, N_CHANNELS)`` (média dos bursts).
+            2D array of shape ``(n_samples, N_CHANNELS)``.
         """
-        frames=[]
-        for i in range(n_samples):
+        collected = []  # list of 1D arrays, each of shape (N_CHANNELS,)
+        while sum(len(chunk) for chunk in collected) < n_samples:
             try:
-                frame = self.read_unchecked()
-                frames.append(frame)
+                chunk = self.read_unchecked()  # (burst_samples, N_CHANNELS)
+                collected.append(chunk)
             except Exception as e:
                 if log_errors:
                     print(f"Reading exception :{e}")
-        return np.array(frames)
+                continue
 
-    def read_many_raw2(
-            self,
-            drain_timeout: float = 0.0,
-            max_errors: int = 100000,
-        ) -> np.ndarray:
-            """Lê exatamente 32 frames via ``read_many_unchecked``, ignorando exceções.
+        data = np.concatenate(collected, axis=0)
+        return data[:n_samples]
 
-            Args:
-                drain_timeout: Timeout temporário (em segundos) repassado a
-                    ``read_many_unchecked``.
-                max_errors: Limite de tentativas/exceções antes de abortar.
+    def read_unchecked(self) -> np.ndarray:
+        """Reads the next burst without error handling.
 
-            Returns:
-                Array 2D de formato ``(32, N_CHANNELS)`` com exatamente 32 amostras.
-            """
-            target_samples = 32
-            chunks: list[np.ndarray] = []
-            collected = 0
-            errors = 0
+        Returns:
+            2D array of shape ``(burst_samples, N_CHANNELS)`` with raw samples
+            (mean across bursts is no longer applied — samples are returned
+            individually).
 
-            while collected < target_samples:
-                try:
-                    data = self.read_many_unchecked(drain_timeout=drain_timeout)
-                    if data.ndim == 2 and data.shape[0] > 0:
-                        needed = target_samples - collected
-                        take = data[:needed]
-                        chunks.append(take)
-                        collected += take.shape[0]
-                        errors = 0
-                    else:
-                        errors += 1
-                except Exception as e:
-                    print(f"Reading exception :{e}")
-                    errors += 1
-
-                if errors >= max_errors:
-                    raise RuntimeError(
-                        f"Reached read retry limit of {max_errors}, connection is likely dead."
-                    )
-            return np.vstack(chunks)
-
-    def read_many_32(self) -> np.ndarray:
-        raw: np.ndarray = self.read_many_raw()
-        n_frames: int = raw.shape[0]
-        if n_frames == 0:
-            return np.empty((0, N_CHANNELS), dtype=float)
-
-        out_data: np.ndarray = np.empty((n_frames, N_CHANNELS), dtype=float)
-        for frame_idx in range(n_frames):
-            for ch_idx in range(N_CHANNELS):
-                r: float = float(raw[frame_idx, ch_idx])
-                f: BiQuadFilter = self.filters[ch_idx]
-                c: Converter = self.converters[ch_idx]
-                val_f: float = f.process(r)
-                val_c: float = c.process(val_f)
-                out_data[frame_idx, ch_idx] = val_c
-        return out_data
+        Raises:
+            socket.timeout: If no packet arrives within the timeout.
+        """
+        raw: bytes
+        raw, _ = self.sock.recvfrom(RECV_BUFFER)
+        # (burst_samples, N_CHANNELS)
+        blocks: np.ndarray = parse_pack(raw, N_CHANNELS)
+        return np.asarray(blocks, dtype=float)
 
     def read_many(self) -> np.ndarray:
         """Lê todos os frames disponíveis, filtra e converte cada canal.
@@ -975,7 +895,7 @@ class Sensors:
         Returns:
             Array 2D de formato ``(n_frames, N_CHANNELS)`` com valores calibrados.
         """
-        n_samples=32
+        n_samples = 32
         raw: np.ndarray = self.read_many_raw(n_samples=n_samples)
         out_data: np.ndarray = np.empty((n_samples, N_CHANNELS), dtype=float)
         for ch_idx in range(N_CHANNELS):
@@ -984,7 +904,7 @@ class Sensors:
             c: Converter = self.converters[ch_idx]
             val_f: float = f.process_block(r)
             val_c: float = c.process_block(val_f)
-            #val_c: float = c.process_block(r)
+            # val_c: float = c.process_block(r)
             out_data[:, ch_idx] = val_c
         return out_data
 
@@ -1031,7 +951,8 @@ class Sensors:
             dst[f"SENSORS_CHANNEL{i}_GAIN"] = str(self.converters[i].gain)
             dst[f"SENSORS_CHANNEL{i}_OFFSET"] = str(self.converters[i].offset)
             dst[f"SENSORS_CHANNEL{i}_CUTOFF"] = str(self.filters[i].cutoff)
-            dst[f"SENSORS_CHANNEL{i}_RESONANCE"] = str(self.filters[i].resonance)
+            dst[f"SENSORS_CHANNEL{i}_RESONANCE"] = str(
+                self.filters[i].resonance)
             dst[f"SENSORS_CHANNEL{i}_TYPE"] = str(self.types[i])
             # static values come from the stored config
             dst[f"SENSORS_CHANNEL{i}_LPF"] = str(cfg.i_lpf)

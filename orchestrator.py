@@ -119,7 +119,8 @@ class Orchestrator:
             for i in range(N_CHANNELS):
                 print(config[f"SYSTEM_CHANNEL{i}_ENABLE"])
                 enable: bool = (
-                    True if config[f"SYSTEM_CHANNEL{i}_ENABLE"] == "True" else False
+                    True if config[f"SYSTEM_CHANNEL{
+                        i}_ENABLE"] == "True" else False
                 )
                 self.enables.append(enable)
                 self.ch_names.append(config[f"SYSTEM_CHANNEL{i}_NAME"])
@@ -188,7 +189,7 @@ class Orchestrator:
         self.state = State.CALIBRATING
         self.channel_idx = channel
         self.sensors.start()
-        self.sensors.calibrate_filter(channel,max_cutoff=15)
+        self.sensors.calibrate_filter(channel, max_cutoff=15)
 
     def profile_factors(self, a: float, b: float) -> None:
         """Set the motor's peak-shape blend factors.
@@ -334,7 +335,7 @@ class Orchestrator:
         omega = self.motor.get_omega()
         f = peak_generator(omega, a, b, max_rpm=max_val)
         step = 0.1
-        g = lambda x: f(step * (0.5 + (x // step)))
+        def g(x): return f(step * (0.5 + (x // step)))
         return g
 
     def reset(self) -> None:
@@ -368,7 +369,7 @@ class Orchestrator:
                 out.append({"number": i, "name": self.ch_names[i]})
         return out
 
-    def read_enabled(self):
+    def read(self):
         if self.state == State.RUNNING or self.state == State.CALIBRATING:
             # self.sensors.flush()
 
@@ -382,7 +383,7 @@ class Orchestrator:
             print("Sensors are not activated!")
             return []
 
-    def read_many_enabled(self) -> np.ndarray:
+    def read_many(self) -> np.ndarray:
         """Lê todos os frames disponíveis apenas dos canais habilitados.
 
         Args:
@@ -404,37 +405,3 @@ class Orchestrator:
 
         print("Sensors are not activated!")
         return np.empty((0, n_enabled), dtype=float)
-
-    def read_many_enabled_buffered(self) -> np.ndarray:
-        """Lê todos os frames disponíveis apenas dos canais habilitados e calcula
-        a média a cada 32 amostras por canal, descartando sobras incompletas.
-
-        Returns:
-            Array 2D de formato ``(n_chunks, n_enabled)`` com a média de cada
-            bloco de 32 frames dos canais ativos, ou array vazio quando inativo
-            ou com menos de 32 frames.
-        """
-        batch_size = 32
-        enabled_indices = [i for i in range(N_CHANNELS) if self.enables[i]]
-        n_enabled = len(enabled_indices)
-
-        if self.state in (State.RUNNING, State.CALIBRATING):
-            # self.sensors.flush()
-            frames: np.ndarray = self.sensors.read_many_32()
-            if frames.shape[0] == 0 or n_enabled == 0:
-                print("NOTHING READ!")
-                return np.empty((0, n_enabled), dtype=float)
-
-            selected = frames[:, enabled_indices]
-            n_chunks = selected.shape[0] // batch_size
-            if n_chunks == 0:
-                print("NO CHUNCKS!")
-                return np.empty((0, n_enabled), dtype=float)
-
-            usable_rows = n_chunks * batch_size
-            chunks = selected[:usable_rows].reshape(n_chunks, batch_size, n_enabled)
-            return chunks.mean(axis=1)
-
-        print("Sensors are not activated!")
-        return np.empty((0, n_enabled), dtype=float)
-
