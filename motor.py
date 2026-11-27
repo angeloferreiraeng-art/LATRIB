@@ -605,7 +605,7 @@ class Motor:
         times: np.ndarray = np.ones(NUM_SEGMENTS) * SEG_TIME
         half_period: float = float(np.sum(times) / 10)
         print("period", 2 * half_period)
-        STROKE_SIZE: int = 50  # rpm
+        STROKE_SIZE: int = 50/4  # rpm
         omega: float = np.pi / half_period
         print("omega", omega)
         modifier: float = peak_integral(self.a_factor, self.b_factor)
@@ -713,7 +713,8 @@ class Motor:
         t: float = 0.0
         for dt in times:
             t += dt / 10
-            speed: int = int(np.floor(f(t)))
+            t_mid = t + (0.5 * dt / 10)
+            speed: int = int(np.floor(f(t_mid)))
             print(speed)
             assert speed >= 0, "HALFSTROKE SPEED NEEDS TO BE POSITIVE."
             v_plus.append(speed)

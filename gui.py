@@ -2,25 +2,25 @@
 import os
 import time
 import tkinter as tk
-from tkinter import ttk
 from collections import deque
 from pathlib import Path
+from tkinter import ttk
 
 import numpy as np
-from scipy.integrate import quad
-
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from scipy.integrate import quad
 
 from orchestrator import Orchestrator, State, parse_config
 from simulator import HardwareSim
 
-OUT_DIR = Path.home()
-FILE_NAME = "data"
+
+OUT_DIR = os.path.join(Path.home(),"Desktop")
+FILE_NAME = "reciprocating_data"
 OUT_CSV = os.path.join(OUT_DIR, f"{FILE_NAME}.csv")  # valor padrão do output path
 RATE_HZ = 50
 
-WINDOW_SIZE = 200  # points visible on the plot
+DEFAULT_WINDOW_SIZE = 200  # points visible on the plot
 INTERVAL_MS = 33  # ~30 FPS
 CSV_TAIL_HZ = 50  # how often to poll the CSV (optional)
 
@@ -38,6 +38,63 @@ def safe_float(value: str):
 def format_mmss(seconds):
     seconds = max(0, int(seconds))
     return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+def walking_fft(signal: deque, window_size: int) -> deque:
+    """Compute a walking FFT over a sliding window of length `window_size`.
+
+    Returns a `deque` of the same length as `signal`. Positions before a full
+    `window_size` is available are filled with `None`.
+    """
+    if window_size <= 0:
+        raise ValueError("window_size must be a positive integer")
+
+    n = len(signal)
+    result: deque = deque(maxlen=n)
+
+    if n == 0:
+        return result
+
+    if window_size > n:
+        return deque([None] * n, maxlen=n)
+
+    # Maintain a sliding window of size `window_size`
+    window: deque = deque(maxlen=window_size)
+
+    for i, sample in enumerate(signal):
+        window.append(sample)
+        if i < window_size - 1:
+            result.append(None)
+        else:
+            arr = np.asarray(window, dtype=float)
+            spectrum = np.fft.rfft(arr)
+            result.append(spectrum)
+
+    return result
+
+def walking_average(signal: deque[float], window_size: int) -> deque[float]:
+    """Return a deque of the same length containing the sliding window average."""
+    if window_size <= 0:
+        raise ValueError("window_size must be a positive integer.")
+
+    n = len(signal)
+    if n == 0:
+        return deque()
+
+    effective_window = min(window_size, n)
+    result: deque[float] = deque(maxlen=n)
+    window: deque[float] = deque()
+    running_sum = 0.0
+
+    for value in signal:
+        window.append(value)
+        running_sum += value
+
+        if len(window) > effective_window:
+            running_sum -= window.popleft()
+
+        result.append(running_sum / len(window))
+
+    return result
 
 
 def ask_value(parent, title="Enter value", prompt="Value:", default=""):
@@ -106,8 +163,8 @@ class GUI:
         self._t0 = None
         self._timer_t0 = None  # monotonic start of the countdown
         self._timer_total = TIMER_SECONDS  # duração congelada no start()
-        self._t_data = deque(maxlen=WINDOW_SIZE)
-        self._y_data = deque(maxlen=WINDOW_SIZE)
+        self._t_data = deque(maxlen=DEFAULT_WINDOW_SIZE)
+        self._y_data = deque(maxlen=DEFAULT_WINDOW_SIZE)
         self._csv_file = None  # output CSV handle (open while running)
         self._csv_writer = None
 
@@ -203,13 +260,17 @@ class GUI:
         self.canvas = FigureCanvasTkAgg(fig, master=tab)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=6)
 
-        self.data = deque([0.0] * WINDOW_SIZE, maxlen=WINDOW_SIZE)
+        rate=self.orch.sensors.rate_hz
+        WINDOW_TIME=10 #10 seconds
+        self.w_size=int(WINDOW_TIME*rate)
+        self.data = deque([0.0] * self.w_size, maxlen=self.w_size)
+        x_data=np.linspace(0,WINDOW_TIME,self.w_size)
         (self.line_1,) = self.ax.plot(
-            range(WINDOW_SIZE), self.data, color="#007acc", linewidth=1.8
+            x_data, self.data, color="#007acc", linewidth=1.8
         )
         self.ax.set_xlabel("Time [s]")
         self._update_ylabel()
-        self.ax.set_xlim(0, WINDOW_SIZE)
+        self.ax.set_xlim(0, self.w_size)
         self.ax.grid(alpha=0.5)
 
     # ------------------------------------------------------------------
@@ -226,6 +287,7 @@ class GUI:
         ttk.Label(configs, text="Config path:").grid(row=0, column=0, sticky="w", **pad)
         self.cfg_path_entry = ttk.Entry(configs, width=10)
         self.cfg_path_entry.grid(row=0, column=1, sticky="w", **pad)
+        self.cfg_path_entry.insert(0, "config.txt")
         ttk.Button(configs, text="Adicional Canal", command=self.add_channel).grid(
             row=0, column=2, **pad
         )
@@ -256,6 +318,9 @@ class GUI:
         ttk.Label(profile, text="Fator B:").grid(row=0, column=2, sticky="w", **pad)
         self.b_factor_entry = ttk.Entry(profile, width=10)
         self.b_factor_entry.grid(row=0, column=3, sticky="w", **pad)
+
+        self.a_factor_entry.insert(0, str(0))
+        self.b_factor_entry.insert(0, str(1))
 
         # --- tempo de ensaio (em minutos) ---
         ttk.Label(profile, text="Tempo de ensaio [min]:").grid(
@@ -291,6 +356,7 @@ class GUI:
         b = safe_float(self.b_factor_entry.get())
         self.orch.profile_factors(a, b)
         f = self.orch.velocity_func()
+        g = self.orch.velocity_discrete()
 
         x_0 = 0
         x_1 = np.pi / self.orch.motor.get_omega()
@@ -302,6 +368,7 @@ class GUI:
         # --- 2. Prepare data for plotting ---
         x = np.linspace(x_0, x_1, 10000)
         y = f(x)
+        y2 = g(x)
 
         # --- 3. Clear and redraw the two panels ---
         self.plan_ax.clear()
@@ -309,6 +376,7 @@ class GUI:
 
         # ----- Top panel: original function -----
         self.plan_ax.plot(x, y, "b-", linewidth=2, label=r"$f(x)$")
+        self.plan_ax.plot(x, y2, "b-", linewidth=2, label=r"$g(x)$")
 
         # Fill the actual integrated interval [x_0, x_1]
         self.plan_ax.fill_between(
@@ -319,12 +387,6 @@ class GUI:
             label=f"Area = {integral_value:.4f}",
         )
 
-        # Only draw the a/b markers if they fall inside the plotted range —
-        # otherwise axvline forces matplotlib to expand the x-axis.
-        if x_0 <= a <= x_1:
-            self.plan_ax.axvline(a, color="gray", linestyle="--", alpha=0.7)
-        if x_0 <= b <= x_1:
-            self.plan_ax.axvline(b, color="gray", linestyle="--", alpha=0.7)
         self.plan_ax.axhline(0, color="black", linewidth=0.8)
 
         self.plan_ax.set_xlabel("x")
@@ -403,10 +465,11 @@ class GUI:
             )
             ref_entry = ttk.Entry(ch_frame, width=10)
             ref_entry.grid(row=1, column=1, sticky="w", **pad)
+            ref_entry.insert(0, str(0))
             ttk.Button(
                 ch_frame,
                 text="Capturar Sinal",
-                command=lambda e=ref_entry: self.orch.ref_point(int(e.get())),
+                command=lambda e=ref_entry: self.orch.ref_point(safe_float(e.get())),
             ).grid(row=1, column=2, **pad)
 
     # ------------------------------------------------------------------
@@ -430,10 +493,10 @@ class GUI:
     def _on_channel_selected(self, event=None):
         """Reset the plot buffers when the user switches channels."""
         self.data.clear()
-        self.data.extend([0.0] * WINDOW_SIZE)
+        self.data.extend([0.0] * self.w_size)
         self._t_data.clear()
         self._y_data.clear()
-        self.line_1.set_data(range(WINDOW_SIZE), list(self.data))
+        self.line_1.set_data(range(self.w_size), list(self.data))
         self.ax.relim()
         self.ax.autoscale_view(scalex=False, scaley=True)
         self._update_ylabel()
@@ -441,6 +504,21 @@ class GUI:
 
     def _selected_channel_number(self):
         return self._channel_lookup.get(self.channel_var.get())
+
+    def _selected_enabled_column(self) -> int | None:
+        """Return the column index of the selected channel within enabled channels."""
+        selected_num = self._selected_channel_number()
+        if selected_num is None:
+            return None
+
+        col_idx = 0
+        for ch in self.orch.channels():
+            if not ch.get("enabled", True):
+                continue
+            if ch["number"] == selected_num:
+                return col_idx
+            col_idx += 1
+        return None
 
     def _update_ylabel(self):
         """Set the y-axis label to the currently selected channel's name."""
@@ -475,6 +553,35 @@ class GUI:
         self._csv_writer.writerow(np.atleast_1d(list(frame)).tolist())
         self._csv_file.flush()
 
+    def _write_csv_frames(self, frames) -> None:
+        """Append multiple frames as CSV rows."""
+        if self._csv_writer is None or frames is None:
+            return
+
+        arr = np.asarray(frames)
+        if arr.size == 0:
+            return
+
+        if arr.ndim == 0:
+            rows = [[arr.item()]]
+        elif arr.ndim == 1:
+            # Single frame (1D sequence/array) or sequence of dicts
+            if len(arr) > 0 and isinstance(arr[0], dict):
+                rows = [list(item.values()) for item in arr]
+            else:
+                rows = [arr.tolist()]
+        else:
+            # 2D+ batch of frames: each row is one frame
+            rows = [
+                list(item.values())
+                if isinstance(item, dict)
+                else np.atleast_1d(item).tolist()
+                for item in arr
+            ]
+
+        self._csv_writer.writerows(rows)
+        self._csv_file.flush()
+
     def _close_csv(self):
         if self._csv_file is not None:
             try:
@@ -499,16 +606,17 @@ class GUI:
         self._timer_t0 = None
         self.timer_label.config(text=format_mmss(self._timer_seconds()), fg="black")
 
-    def _update_timer(self):
+    def _update_timer(self) -> bool:
         if self._timer_t0 is None:
-            return
+            return False
         remaining = self._timer_total - (time.monotonic() - self._timer_t0)
         self.timer_label.config(
             text=format_mmss(remaining + 0.999),  # round up so 00:00 only at zero
             fg="red" if remaining <= 0 else "black",
         )
-        if remaining <= 0 and AUTO_STOP_AT_ZERO and self._running:
-            self.stop(reset_timer=False)
+        if remaining <= 0 and self._running:
+            self.finish()
+        return remaining <= 0
 
     # ------------------------------------------------------------------
     # ACTIONS
@@ -524,7 +632,7 @@ class GUI:
         self._t_data.clear()
         self._y_data.clear()
         self.data.clear()
-        self.data.extend([0.0] * WINDOW_SIZE)
+        self.data.extend([0.0] * self.w_size)
 
         self._timer_total = self._timer_seconds()  # congela a duração ao iniciar
         self._running = True
@@ -539,6 +647,12 @@ class GUI:
             pass  # self._reset_timer()
         else:
             self._timer_t0 = None  # freeze the display (at 00:00)
+
+    def finish(self):
+        self.orch.stop()
+        self._running = False
+        self._close_csv()
+        self._reset_timer()
 
     def velocity_mode(self):
         a = safe_float(self.a_factor_entry.get())
@@ -567,14 +681,22 @@ class GUI:
     def redraw(self):
         try:
             if self._running:
-                ch = self._selected_channel_number()
-                frame = self.orch.read_enabled()
-                self._write_csv_frame(frame)  # append this frame to the CSV
-                if ch is not None:
-                    val = self.orch.read_channel(ch)
-                    self.data.append(val)
-                    self._t_data.append(time.time() - self._t0)
-                    self._y_data.append(val)
+                frames = np.asarray(self.orch.read_many_enabled())
+                self._write_csv_frames(frames)
+
+                col_idx = self._selected_enabled_column()
+                if (
+                    frames.ndim == 2
+                    and frames.shape[0] > 0
+                    and col_idx is not None
+                    and col_idx < frames.shape[1]
+                ):
+                    now = time.time() - self._t0
+                    for row in frames:
+                        val = float(row[col_idx])
+                        self.data.append(val)
+                        self._t_data.append(now)
+                        self._y_data.append(val)
 
                     self.line_1.set_data(range(len(self.data)), list(self.data))
                     self.ax.relim()

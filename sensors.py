@@ -312,19 +312,8 @@ class Converter:
         """
         return value * self.gain + self.offset
 
-    def process_block(self, block: list[float]) -> list[float]:
-        """Aplica a conversão a um bloco de valores, in-place.
-
-        Args:
-            block: Lista de valores brutos.
-
-        Returns:
-            O mesmo bloco, com cada elemento convertido.
-        """
-        for i in range(len(block)):
-            raw = block[i]
-            block[i] = raw * self.gain + self.offset
-        return block
+    def process_block(self, block: np.ndarray) -> np.ndarray:
+        return block * self.gain + self.offset
 
 
 @dataclass
@@ -424,33 +413,35 @@ class BiQuadFilter:
         self.x1, self.x2, self.y1, self.y2 = x1, x2, y1, y2
         return output
 
-    def process_block(
-        self, block: list[float] | np.ndarray
-    ) -> list[float] | np.ndarray:
-        """Filtra um bloco de amostras in-place.
+    def process_block(self, inp: np.ndarray) -> np.ndarray:
+            """Processa um bloco de amostras 1D através do filtro.
 
-        Args:
-            block: Lista ou array NumPy de floats.
+            Args:
+                inp: Array 1D de amostras de entrada.
 
-        Returns:
-            O mesmo bloco, com cada amostra filtrada.
-        """
-        a0, a1, a2, a3, a4 = self.a0, self.a1, self.a2, self.a3, self.a4
-        x1, x2, y1, y2 = self.x1, self.x2, self.y1, self.y2
+            Returns:
+                Array 1D ``np.ndarray`` (``dtype=float``) com as amostras filtradas.
+            """
+            samples = np.asarray(inp, dtype=float).ravel()
+            n = samples.shape[0]
+            if n == 0:
+                return np.empty(0, dtype=float)
 
-        for t in range(len(block)):
-            inp: float = block[t]
-            output: float = a0 * inp + a1 * x1 + a2 * x2 - a3 * y1 - a4 * y2
+            a0, a1, a2, a3, a4 = self.a0, self.a1, self.a2, self.a3, self.a4
+            x1, x2, y1, y2 = self.x1, self.x2, self.y1, self.y2
+            out = np.empty(n, dtype=float)
 
-            x2 = x1
-            x1 = inp
-            y2 = y1
-            y1 = output
+            for i in range(n):
+                xi = samples[i]
+                yi = a0 * xi + a1 * x1 + a2 * x2 - a3 * y1 - a4 * y2
+                out[i] = yi
+                x2 = x1
+                x1 = xi
+                y2 = y1
+                y1 = yi
 
-            block[t] = output
-
-        self.x1, self.x2, self.y1, self.y2 = x1, x2, y1, y2
-        return block
+            self.x1, self.x2, self.y1, self.y2 = x1, x2, y1, y2
+            return out
 
     def _set_coefficients(
         self, a0: float, a1: float, a2: float, b0: float, b1: float, b2: float
@@ -679,9 +670,9 @@ class Sensors:
     def calibrate_filter(
         self,
         idx: int,
-        n_samples: int = 32,
+        n_samples: int = 256,
         min_freq: float = 2.0,
-        max_cutoff: float = 30.0,
+        max_cutoff: float = 100,
     ) -> None:
         """Estima a frequência de corte ideal para um canal a partir do ruído.
 
@@ -792,48 +783,20 @@ class Sensors:
         new_converter: Converter = Converter(offset, gain)
         self.converters[idx] = new_converter
 
-    def read_old(self) -> np.ndarray:
-        """Lê o próximo frame, filtrando e convertendo para unidades calibradas.
-
-        Em caso de timeout ou reset de conexão, retorna um vetor de zeros.
-
-        Returns:
-            Array de ``N_CHANNELS`` valores calibrados.
-        """
-        # print("reading")
-        try:
-            raw: bytes
-            raw, _ = self.sock.recvfrom(RECV_BUFFER)
-            blocks: np.ndarray = parse_pack(raw, N_CHANNELS)
-            out_data: np.ndarray = np.zeros(N_CHANNELS)
-            for i in range(N_CHANNELS):
-                b: float = float(np.mean(blocks[i]))
-                b = self.filters[i].process(b)
-                b = self.converters[i].process(b)
-                out_data[i] = b
-        except socket.timeout:
-            print("timedout")
-            out_data = np.zeros(N_CHANNELS)
-        except ConnectionResetError:  # Windows: ICMP "port unreachable"
-            print("port unreachable")
-            out_data = np.zeros(N_CHANNELS)
-        # print(out_data)
-        return out_data
-
     def read(self) -> np.ndarray:
         """Lê o próximo frame, filtra e converte cada canal.
 
         Returns:
             Array de ``N_CHANNELS`` valores calibrados.
         """
-        raw: np.ndarray = self.read_raw()
+        raw: np.ndarray = self.read_nice()
         out_data: list[float] = []  # np.zeros(N_CHANNELS)
         for i in range(N_CHANNELS):
             r: float = raw[i]
             f: BiQuadFilter = self.filters[i]
             c: Converter = self.converters[i]
-            val_f: float = f.process(r)
-            val_c: float = c.process(val_f)
+            #val_f: float = f.process(r)
+            val_c: float = c.process(r)
             out_data.append(val_c)
         return np.array(out_data)
 
@@ -863,7 +826,7 @@ class Sensors:
         Returns:
             Array de ``N_CHANNELS`` valores brutos (média dos bursts).
         """
-        limit = 100
+        limit = 1000
         for i in range(limit):
             try:
                 return self.read_unchecked()
@@ -890,6 +853,139 @@ class Sensors:
         for i in range(N_CHANNELS):
             b: float = float(np.mean(blocks[i]))
             out_data[i] = b
+        return out_data
+
+    def read_many_unchecked(self, drain_timeout: float = 0.0) -> np.ndarray:
+        prev_timeout = self.sock.gettimeout()
+        frames: list[np.ndarray] = []
+
+        try:
+            self.sock.settimeout(drain_timeout)
+            while True:
+                try:
+                    raw, _ = self.sock.recvfrom(RECV_BUFFER)
+                except (socket.timeout, BlockingIOError):
+                    break
+                blocks: np.ndarray = parse_pack(raw, N_CHANNELS)
+                out_data: np.ndarray = np.full(N_CHANNELS, np.nan, dtype=float)
+                for i in range(N_CHANNELS):
+                    out_data[i] = float(np.mean(blocks[i]))
+                frames.append(out_data)
+        finally:
+            self.sock.settimeout(prev_timeout)
+
+        if not frames:
+            return np.empty((0, N_CHANNELS), dtype=float)
+        return np.vstack(frames)
+
+
+    def read_many_raw(
+        self,
+        n_samples: int = 32,
+        log_errors=True
+    ) -> np.ndarray:
+        """Lê os frames disponíveis via ``read_many_unchecked``, ignorando exceções.
+
+        Args:
+            drain_timeout: Timeout temporário (em segundos) repassado a
+                ``read_many_unchecked``.
+            max_errors: Limite de tentativas/exceções antes de abortar.
+            allow_empty: Se ``True``, retorna ``(0, N_CHANNELS)`` imediatamente
+                quando nenhum frame estiver disponível; se ``False``, tenta novamente
+                até obter ao menos um frame.
+
+        Returns:
+            Array 2D de formato ``(n_frames, N_CHANNELS)`` (média dos bursts).
+        """
+        frames=[]
+        for i in range(n_samples):
+            try:
+                frame = self.read_unchecked()
+                frames.append(frame)
+            except Exception as e:
+                if log_errors:
+                    print(f"Reading exception :{e}")
+        return np.array(frames)
+
+    def read_many_raw2(
+            self,
+            drain_timeout: float = 0.0,
+            max_errors: int = 100000,
+        ) -> np.ndarray:
+            """Lê exatamente 32 frames via ``read_many_unchecked``, ignorando exceções.
+
+            Args:
+                drain_timeout: Timeout temporário (em segundos) repassado a
+                    ``read_many_unchecked``.
+                max_errors: Limite de tentativas/exceções antes de abortar.
+
+            Returns:
+                Array 2D de formato ``(32, N_CHANNELS)`` com exatamente 32 amostras.
+            """
+            target_samples = 32
+            chunks: list[np.ndarray] = []
+            collected = 0
+            errors = 0
+
+            while collected < target_samples:
+                try:
+                    data = self.read_many_unchecked(drain_timeout=drain_timeout)
+                    if data.ndim == 2 and data.shape[0] > 0:
+                        needed = target_samples - collected
+                        take = data[:needed]
+                        chunks.append(take)
+                        collected += take.shape[0]
+                        errors = 0
+                    else:
+                        errors += 1
+                except Exception as e:
+                    print(f"Reading exception :{e}")
+                    errors += 1
+
+                if errors >= max_errors:
+                    raise RuntimeError(
+                        f"Reached read retry limit of {max_errors}, connection is likely dead."
+                    )
+            return np.vstack(chunks)
+
+    def read_many_32(self) -> np.ndarray:
+        raw: np.ndarray = self.read_many_raw()
+        n_frames: int = raw.shape[0]
+        if n_frames == 0:
+            return np.empty((0, N_CHANNELS), dtype=float)
+
+        out_data: np.ndarray = np.empty((n_frames, N_CHANNELS), dtype=float)
+        for frame_idx in range(n_frames):
+            for ch_idx in range(N_CHANNELS):
+                r: float = float(raw[frame_idx, ch_idx])
+                f: BiQuadFilter = self.filters[ch_idx]
+                c: Converter = self.converters[ch_idx]
+                val_f: float = f.process(r)
+                val_c: float = c.process(val_f)
+                out_data[frame_idx, ch_idx] = val_c
+        return out_data
+
+    def read_many(self) -> np.ndarray:
+        """Lê todos os frames disponíveis, filtra e converte cada canal.
+
+        Args:
+            **kwargs: Argumentos repassados para ``read_many_raw`` (ex.:
+                ``drain_timeout``, ``max_errors``, ``allow_empty``).
+
+        Returns:
+            Array 2D de formato ``(n_frames, N_CHANNELS)`` com valores calibrados.
+        """
+        n_samples=32
+        raw: np.ndarray = self.read_many_raw(n_samples=n_samples)
+        out_data: np.ndarray = np.empty((n_samples, N_CHANNELS), dtype=float)
+        for ch_idx in range(N_CHANNELS):
+            r = raw[:, ch_idx]
+            f: BiQuadFilter = self.filters[ch_idx]
+            c: Converter = self.converters[ch_idx]
+            val_f: float = f.process_block(r)
+            val_c: float = c.process_block(val_f)
+            #val_c: float = c.process_block(r)
+            out_data[:, ch_idx] = val_c
         return out_data
 
     def read_buffered(self, b_size: int = 16) -> np.ndarray:

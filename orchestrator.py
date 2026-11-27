@@ -188,7 +188,7 @@ class Orchestrator:
         self.state = State.CALIBRATING
         self.channel_idx = channel
         self.sensors.start()
-        self.sensors.calibrate_filter(channel)
+        self.sensors.calibrate_filter(channel,max_cutoff=15)
 
     def profile_factors(self, a: float, b: float) -> None:
         """Set the motor's peak-shape blend factors.
@@ -326,6 +326,17 @@ class Orchestrator:
         omega = self.motor.get_omega()
         return peak_generator(omega, a, b, max_rpm=max_val)
 
+    def velocity_discrete(self):
+        a = self.motor.a_factor
+        b = self.motor.b_factor
+        modif = peak_integral(a, b)
+        max_val = 1 / modif
+        omega = self.motor.get_omega()
+        f = peak_generator(omega, a, b, max_rpm=max_val)
+        step = 0.1
+        g = lambda x: f(step * (0.5 + (x // step)))
+        return g
+
     def reset(self) -> None:
         """Flush the sensor buffers."""
         self.sensors.flush()
@@ -361,7 +372,7 @@ class Orchestrator:
         if self.state == State.RUNNING or self.state == State.CALIBRATING:
             # self.sensors.flush()
 
-            frame = self.sensors.read()
+            frame = self.sensors.read_nice()
             out_frame = []
             for i in range(N_CHANNELS):
                 if self.enables[i]:
@@ -371,35 +382,59 @@ class Orchestrator:
             print("Sensors are not activated!")
             return []
 
-    def read_channel(self, channel: int) -> float:
-        """Read the latest conditioned value from a channel.
-
-        Only valid while :attr:`State.RUNNING` or
-        :attr:`State.CALIBRATING`.
+    def read_many_enabled(self) -> np.ndarray:
+        """Lê todos os frames disponíveis apenas dos canais habilitados.
 
         Args:
-            channel: Channel index to read.
+            **kwargs: Argumentos repassados para ``self.sensors.read_many``.
 
         Returns:
-            The conditioned reading, or ``numpy.nan`` if the sensors
-            are not active.
+            Array 2D de formato ``(n_frames, n_enabled)`` com os valores dos canais
+            ativos, ou array vazio quando inativo ou sem frames.
         """
-        if self.state == State.RUNNING or self.state == State.CALIBRATING:
+        enabled_indices = [i for i in range(N_CHANNELS) if self.enables[i]]
+        n_enabled = len(enabled_indices)
+
+        if self.state in (State.RUNNING, State.CALIBRATING):
             # self.sensors.flush()
-            frame = self.sensors.read_nice()
-            return frame[channel]
-        else:
-            print("Sensors are not activated!")
-            return np.nan
+            frames: np.ndarray = self.sensors.read_many()
+            if frames.shape[0] == 0 or n_enabled == 0:
+                return np.empty((0, n_enabled), dtype=float)
+            return frames[:, enabled_indices]
 
-    def read_channel_raw(self, channel: int) -> float:
-        """Read the latest raw (unconditioned) value from a channel.
+        print("Sensors are not activated!")
+        return np.empty((0, n_enabled), dtype=float)
 
-        Args:
-            channel: Channel index to read.
+    def read_many_enabled_buffered(self) -> np.ndarray:
+        """Lê todos os frames disponíveis apenas dos canais habilitados e calcula
+        a média a cada 32 amostras por canal, descartando sobras incompletas.
 
         Returns:
-            The raw reading.
+            Array 2D de formato ``(n_chunks, n_enabled)`` com a média de cada
+            bloco de 32 frames dos canais ativos, ou array vazio quando inativo
+            ou com menos de 32 frames.
         """
-        frame = self.sensors.read_raw()
-        return frame[channel]
+        batch_size = 32
+        enabled_indices = [i for i in range(N_CHANNELS) if self.enables[i]]
+        n_enabled = len(enabled_indices)
+
+        if self.state in (State.RUNNING, State.CALIBRATING):
+            # self.sensors.flush()
+            frames: np.ndarray = self.sensors.read_many_32()
+            if frames.shape[0] == 0 or n_enabled == 0:
+                print("NOTHING READ!")
+                return np.empty((0, n_enabled), dtype=float)
+
+            selected = frames[:, enabled_indices]
+            n_chunks = selected.shape[0] // batch_size
+            if n_chunks == 0:
+                print("NO CHUNCKS!")
+                return np.empty((0, n_enabled), dtype=float)
+
+            usable_rows = n_chunks * batch_size
+            chunks = selected[:usable_rows].reshape(n_chunks, batch_size, n_enabled)
+            return chunks.mean(axis=1)
+
+        print("Sensors are not activated!")
+        return np.empty((0, n_enabled), dtype=float)
+
